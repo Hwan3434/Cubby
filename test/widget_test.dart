@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -18,6 +21,30 @@ class _FakeMediaRepository implements MediaRepository {
 
   @override
   Future<AssetPathEntity?> createAlbum(String name) async => null;
+
+  @override
+  Future<List<AssetEntity>> getAssets(
+    AssetPathEntity album, {
+    int page = 0,
+    int pageSize = 80,
+  }) async => const [];
+
+  @override
+  Future<AssetEntity> saveImage({
+    required Uint8List bytes,
+    required String filename,
+    required AssetPathEntity album,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<AssetEntity> saveVideo({
+    required File file,
+    required String filename,
+    required AssetPathEntity album,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<List<String>> deleteAssets(List<AssetEntity> assets) async => const [];
 }
 
 class _FakeAlbumMetaStore implements AlbumMetaStore {

@@ -25,7 +25,6 @@
 |--|---------------------|---------------------|
 |F1|첫 화면에 앨범 목록 표시       |앨범명 + 생성일            |
 |F2|앨범 생성                |이름 입력                |
-|F3|앨범 이름 변경             |시스템 측에도 반영           |
 |F4|앨범별 사진 목록 화면         |촬영일 내림차순 고정          |
 |F5|앨범별 카메라 화면           |해당 앨범 ID를 받아 그 앨범에 저장|
 |F6|사진/영상 삭제             |OS 권한 다이얼로그 자동 처리    |
@@ -34,6 +33,7 @@
 
 ### 2.2 명시적 비요구사항 (제외)
 
+- 앨범 이름 변경 (photo_manager 미지원, native channel 도입 정당화 부족 → MVP 제외)
 - 드래그앤드롭 사진 순서 변경 (정렬은 촬영일로 고정)
 - 사용자 정의 정렬과 시스템 갤러리 정렬의 동기화
 - 클라우드 백업/공유
@@ -114,7 +114,7 @@ lib/
 │     └─ photo.dart               # AssetEntity 래퍼 (필요 시)
 ├─ ui/
 │  ├─ albums/
-│  │  ├─ albums_screen.dart       # 앨범 목록 (생성/이름변경/진입)
+│  │  ├─ albums_screen.dart       # 앨범 목록 (생성/진입)
 │  │  └─ album_tile.dart
 │  ├─ photos/
 │  │  ├─ photos_screen.dart       # 사진 그리드 (촬영일 정렬, 삭제)
@@ -141,11 +141,6 @@ abstract class MediaRepository {
 
   /// 새 앨범 생성. 이미 존재하는 이름이면 그 앨범 반환.
   Future<AssetPathEntity> createAlbum(String name);
-
-  /// 앨범 이름 변경.
-  /// Android: 폴더 rename으로 동작 → 일부 갤러리 앱 캐시 갱신 필요할 수 있음
-  /// iOS: PHAssetCollectionChangeRequest로 즉시 반영
-  Future<void> renameAlbum(AssetPathEntity album, String newName);
 
   /// 앨범 내 사진/영상 목록. 촬영일 내림차순.
   Future<List<AssetEntity>> getAssets(
@@ -326,11 +321,9 @@ Future<AssetEntity> capturePhoto({
 |Limited Photos 모드       |iOS에서 일부만 보임         |`PermissionState.limited` UI 안내|
 |iCloud 미다운로드 자산         |iOS에서 원본 접근 실패       |progressHandler로 다운로드 처리       |
 |앱 재설치 후 권한 손실           |Android에서 기존 파일 수정 불가|createWriteRequest 다이얼로그       |
-|앨범 이름 변경 시 캐시           |Android 갤러리에서 잠깐 빈 폴더|본인 사용이면 무시 가능                  |
 |PHAssetCollection 사용자 변경|iOS에서 앱과 이름 어긋남      |표시 전 시스템 값 재조회                 |
 |빈 앨범 생성일 nil            |표시할 값 없음             |SharedPreferences로 자체 보관       |
 |Android 빈 앨범 생성 불가       |MediaStore에 폴더만 만드는 API 없음 |`createAlbum`은 메타만 저장, 첫 자산 저장 시점에 폴더 materialize|
-|`renameAlbum` photo_manager 미지원|3.9 기준 Darwin/Android Editor 모두 rename 메서드 없음|MVP에서 보류. 필요 시 native channel 추가|
 
 -----
 
@@ -344,7 +337,7 @@ Future<AssetEntity> capturePhoto({
 
 ### Phase 2: 앨범 CRUD (반나절)
 
-- 앨범 생성/이름변경
+- 앨범 생성 (이름변경은 비요구사항)
 - `AlbumMetaStore` 구현 + 생성일 표시
 - 앨범 목록 UI 완성
 

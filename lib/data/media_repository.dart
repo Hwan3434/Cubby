@@ -1,4 +1,5 @@
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
+import 'dart:typed_data';
 
 import 'package:photo_manager/photo_manager.dart';
 
@@ -18,6 +19,36 @@ abstract class MediaRepository {
   /// `saveImage`/`saveVideo` with that relative path to bring it into
   /// existence.
   Future<AssetPathEntity?> createAlbum(String name);
+
+  /// Assets in [album], paged. Default photo_manager sort is createDateTime
+  /// descending, which matches F4.
+  Future<List<AssetEntity>> getAssets(
+    AssetPathEntity album, {
+    int page = 0,
+    int pageSize = 80,
+  });
+
+  /// Save a captured image into [album].
+  ///
+  /// Android: the relativePath places the file under `Pictures/<albumName>/`,
+  /// which materialises the album folder on first save.
+  /// iOS: the new asset is added to the photo library, then linked into
+  /// [album] via [Editor.copyAssetToPath] (PhotoKit soft-link).
+  Future<AssetEntity> saveImage({
+    required Uint8List bytes,
+    required String filename,
+    required AssetPathEntity album,
+  });
+
+  Future<AssetEntity> saveVideo({
+    required File file,
+    required String filename,
+    required AssetPathEntity album,
+  });
+
+  /// Delete the given assets. Returns the IDs that were successfully deleted.
+  /// Android 11+ and iOS show a system confirmation dialog automatically.
+  Future<List<String>> deleteAssets(List<AssetEntity> assets);
 }
 
 class PhotoManagerMediaRepository implements MediaRepository {
@@ -53,5 +84,60 @@ class PhotoManagerMediaRepository implements MediaRepository {
       return PhotoManager.editor.darwin.createAlbum(name);
     }
     return null;
+  }
+
+  @override
+  Future<List<AssetEntity>> getAssets(
+    AssetPathEntity album, {
+    int page = 0,
+    int pageSize = 80,
+  }) {
+    return album.getAssetListPaged(page: page, size: pageSize);
+  }
+
+  @override
+  Future<AssetEntity> saveImage({
+    required Uint8List bytes,
+    required String filename,
+    required AssetPathEntity album,
+  }) async {
+    final asset = await PhotoManager.editor.saveImage(
+      bytes,
+      filename: filename,
+      relativePath: 'Pictures/${album.name}',
+    );
+    if (Platform.isIOS || Platform.isMacOS) {
+      return PhotoManager.editor.copyAssetToPath(
+        asset: asset,
+        pathEntity: album,
+      );
+    }
+    return asset;
+  }
+
+  @override
+  Future<AssetEntity> saveVideo({
+    required File file,
+    required String filename,
+    required AssetPathEntity album,
+  }) async {
+    final asset = await PhotoManager.editor.saveVideo(
+      file,
+      title: filename,
+      relativePath: 'Movies/${album.name}',
+    );
+    if (Platform.isIOS || Platform.isMacOS) {
+      return PhotoManager.editor.copyAssetToPath(
+        asset: asset,
+        pathEntity: album,
+      );
+    }
+    return asset;
+  }
+
+  @override
+  Future<List<String>> deleteAssets(List<AssetEntity> assets) {
+    final ids = assets.map((a) => a.id).toList();
+    return PhotoManager.editor.deleteWithIds(ids);
   }
 }
