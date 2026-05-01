@@ -249,7 +249,15 @@ class Album {
 <string>영상 촬영을 위해 마이크 권한이 필요합니다.</string>
 ```
 
-**최소 iOS 버전**: 12.0 권장 (photo_manager 호환)
+**최소 iOS 버전**: 13.0 (camera 플러그인이 iOS 13+ 요구)
+
+**의존성 매니저**: Swift Package Manager(SPM) 우선 사용. CocoaPods는 fallback.
+
+- Flutter 3.24+에서 SPM 지원, 3.41 기준 opt-in.
+- 활성화: `flutter config --enable-swift-package-manager` (개발 머신마다 1회)
+- 플러그인이 `Package.swift`를 제공하면 SPM, 아니면 CocoaPods로 자동 폴백
+- CocoaPods는 2026-12-02부로 read-only. 신규 의존성은 SPM 호환 버전으로 픽스
+- `camera` 0.12.x → `camera_avfoundation` 0.10.x 가 SPM 지원함
 
 -----
 
