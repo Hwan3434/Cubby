@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../app.dart';
 import '../camera/camera_screen.dart';
@@ -80,6 +81,34 @@ class _PhotosScreenState extends State<PhotosScreen> {
     await _refresh();
   }
 
+  Future<void> _shareSelected() async {
+    final assets = _items.where((a) => _selected.contains(a.id)).toList();
+    if (assets.isEmpty) return;
+    setState(() => _loading = true);
+    try {
+      final files = await Future.wait(assets.map((a) => a.file));
+      final xfiles = [
+        for (final f in files)
+          if (f != null) XFile(f.path),
+      ];
+      if (!mounted) return;
+      setState(() => _loading = false);
+      if (xfiles.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('공유할 파일을 가져오지 못했습니다')),
+        );
+        return;
+      }
+      await SharePlus.instance.share(ShareParams(files: xfiles));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('공유 실패: $e')),
+      );
+    }
+  }
+
   Future<void> _deleteSelected() async {
     final repo = AppScope.of(context).mediaRepository;
     final assets = _items.where((a) => _selected.contains(a.id)).toList();
@@ -127,12 +156,16 @@ class _PhotosScreenState extends State<PhotosScreen> {
           _selectionMode ? '${_selected.length} selected' : widget.album.name,
         ),
         actions: [
-          if (_selectionMode)
+          if (_selectionMode) ...[
+            IconButton(
+              icon: const Icon(Icons.share),
+              onPressed: _shareSelected,
+            ),
             IconButton(
               icon: const Icon(Icons.delete),
               onPressed: _deleteSelected,
-            )
-          else
+            ),
+          ] else
             IconButton(
               icon: const Icon(Icons.camera_alt),
               onPressed: _openCamera,
