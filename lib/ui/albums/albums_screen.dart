@@ -89,6 +89,16 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
     _reload();
   }
 
+  Future<void> _onPresentLimited() async {
+    await AppScope.of(context).mediaRepository.presentLimitedPicker();
+    if (!mounted) return;
+    _reload();
+  }
+
+  Future<void> _onOpenSettings() async {
+    await AppScope.of(context).mediaRepository.openSystemSettings();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -108,50 +118,52 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
           }
           final result = snapshot.data!;
           if (!result.permission.hasAccess) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text(
-                  '사진 라이브러리 접근 권한이 필요합니다.\n'
-                  '설정에서 권한을 허용해주세요.',
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            );
+            return _PermissionDeniedView(onOpenSettings: _onOpenSettings);
           }
+          final isLimited = result.permission == PermissionState.limited;
           return RefreshIndicator(
             onRefresh: () async => _reload(),
-            child: result.albums.isEmpty
-                ? ListView(
-                    children: const [
-                      SizedBox(height: 200),
-                      Center(child: Text('앨범 없음')),
-                    ],
-                  )
-                : ListView.builder(
-                    itemCount: result.albums.length,
-                    itemBuilder: (context, index) {
-                      final album = result.albums[index];
-                      return ListTile(
-                        title: Text(album.name),
-                        subtitle: Text(_subtitle(album)),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () async {
-                          await Navigator.push<void>(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => PhotosScreen(album: album.source),
-                            ),
-                          );
-                          if (!mounted) return;
-                          _reload();
-                        },
-                      );
-                    },
-                  ),
+            child: Column(
+              children: [
+                if (isLimited) _LimitedBanner(onTap: _onPresentLimited),
+                Expanded(child: _albumsBody(result)),
+              ],
+            ),
           );
         },
       ),
+    );
+  }
+
+  Widget _albumsBody(_AlbumsLoadResult result) {
+    if (result.albums.isEmpty) {
+      return ListView(
+        children: const [
+          SizedBox(height: 200),
+          Center(child: Text('앨범 없음')),
+        ],
+      );
+    }
+    return ListView.builder(
+      itemCount: result.albums.length,
+      itemBuilder: (context, index) {
+        final album = result.albums[index];
+        return ListTile(
+          title: Text(album.name),
+          subtitle: Text(_subtitle(album)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () async {
+            await Navigator.push<void>(
+              context,
+              MaterialPageRoute(
+                builder: (_) => PhotosScreen(album: album.source),
+              ),
+            );
+            if (!mounted) return;
+            _reload();
+          },
+        );
+      },
     );
   }
 
@@ -176,4 +188,63 @@ class _AlbumsLoadResult {
 
   final PermissionState permission;
   final List<Album> albums;
+}
+
+class _PermissionDeniedView extends StatelessWidget {
+  const _PermissionDeniedView({required this.onOpenSettings});
+
+  final VoidCallback onOpenSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '사진 라이브러리 접근 권한이 필요합니다.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: onOpenSettings,
+              child: const Text('설정 열기'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LimitedBanner extends StatelessWidget {
+  const _LimitedBanner({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.secondaryContainer,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              const Icon(Icons.info_outline, size: 20),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text('일부 사진만 접근이 허용되어 있어요'),
+              ),
+              TextButton(onPressed: onTap, child: const Text('더 추가')),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

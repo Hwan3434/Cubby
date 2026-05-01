@@ -6,6 +6,13 @@ import 'package:photo_manager/photo_manager.dart';
 abstract class MediaRepository {
   Future<PermissionState> requestPermission();
 
+  /// Present the iOS Limited Photos picker so the user can broaden the
+  /// app's access to additional assets. No-op on Android.
+  Future<void> presentLimitedPicker();
+
+  /// Open the OS app-settings page (so the user can flip permissions).
+  Future<void> openSystemSettings();
+
   Future<List<AssetPathEntity>> getUserAlbums();
 
   Future<AssetPathEntity?> findAlbumByName(String name);
@@ -56,6 +63,16 @@ class PhotoManagerMediaRepository implements MediaRepository {
   Future<PermissionState> requestPermission() {
     return PhotoManager.requestPermissionExtend();
   }
+
+  @override
+  Future<void> presentLimitedPicker() async {
+    if (Platform.isIOS) {
+      await PhotoManager.presentLimited();
+    }
+  }
+
+  @override
+  Future<void> openSystemSettings() => PhotoManager.openSetting();
 
   @override
   Future<List<AssetPathEntity>> getUserAlbums() {
