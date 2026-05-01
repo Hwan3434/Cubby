@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../../app.dart';
+import '../snackbar.dart';
 
 enum _Mode { photo, video }
 
@@ -79,9 +80,7 @@ class _CameraScreenState extends State<CameraScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('촬영 실패: $e')),
-      );
+      showError(context, '촬영 실패: $e');
     }
   }
 
@@ -96,9 +95,7 @@ class _CameraScreenState extends State<CameraScreen> {
         setState(() => _recording = true);
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('녹화 시작 실패: $e')),
-        );
+        showError(context, '녹화 시작 실패: $e');
       }
       return;
     }
@@ -121,9 +118,7 @@ class _CameraScreenState extends State<CameraScreen> {
         _busy = false;
         _recording = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('저장 실패: $e')),
-      );
+      showError(context, '저장 실패: $e');
     }
   }
 

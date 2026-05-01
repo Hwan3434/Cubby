@@ -41,7 +41,16 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
     super.dispose();
   }
 
+  // Keep 1920px JPEGs only for the active page and its immediate
+  // neighbours. With a 100-photo album each cached entry can run a few
+  // megabytes; without eviction the map grew monotonically with every
+  // page visited.
+  static const _windowRadius = 1;
+
   Future<Uint8List?> _bytesFor(int index) {
+    _futures.removeWhere(
+      (k, _) => (k - index).abs() > _windowRadius,
+    );
     return _futures.putIfAbsent(
       index,
       () => widget.assets[index].thumbnailDataWithSize(_thumbSize),

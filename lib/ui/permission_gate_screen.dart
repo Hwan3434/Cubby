@@ -17,15 +17,10 @@ class PermissionGateScreen extends StatefulWidget {
 }
 
 class _PermissionGateScreenState extends State<PermissionGateScreen> {
-  bool _started = false;
-
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_started) {
-      _started = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _request());
-    }
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _request());
   }
 
   Future<void> _request() async {

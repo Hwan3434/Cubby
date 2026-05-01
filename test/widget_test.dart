@@ -18,9 +18,6 @@ class _FakeMediaRepository implements MediaRepository {
   Future<void> presentLimitedPicker() async {}
 
   @override
-  Future<void> openSystemSettings() async {}
-
-  @override
   Future<List<AssetPathEntity>> getUserAlbums() async => const [];
 
   @override

@@ -10,9 +10,6 @@ abstract class MediaRepository {
   /// app's access to additional assets. No-op on Android.
   Future<void> presentLimitedPicker();
 
-  /// Open the OS app-settings page (so the user can flip permissions).
-  Future<void> openSystemSettings();
-
   Future<List<AssetPathEntity>> getUserAlbums();
 
   Future<AssetPathEntity?> findAlbumByName(String name);
@@ -70,9 +67,6 @@ class PhotoManagerMediaRepository implements MediaRepository {
       await PhotoManager.presentLimited();
     }
   }
-
-  @override
-  Future<void> openSystemSettings() => PhotoManager.openSetting();
 
   @override
   Future<List<AssetPathEntity>> getUserAlbums() {

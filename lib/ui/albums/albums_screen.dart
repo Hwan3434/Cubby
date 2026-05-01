@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../../app.dart';
 import '../../domain/models/album.dart';
 import '../photos/photos_screen.dart';
+import '../snackbar.dart';
 
 class AlbumsScreen extends StatefulWidget {
   const AlbumsScreen({super.key});
@@ -78,11 +80,7 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
       final album = await scope.mediaRepository.createAlbum(name);
       if (!mounted) return;
       if (album == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Android에서는 첫 사진 촬영 시 앨범이 만들어집니다'),
-          ),
-        );
+        showError(context, 'Android에서는 첫 사진 촬영 시 앨범이 만들어집니다');
         return;
       }
       await scope.albumMetaStore.setCreatedAt(album.id, DateTime.now());
@@ -90,9 +88,7 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
       _reload();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('앨범 생성 실패: $e')),
-      );
+      showError(context, '앨범 생성 실패: $e');
     }
   }
 
@@ -103,20 +99,16 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
       _reload();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('사진 선택을 열 수 없습니다: $e')),
-      );
+      showError(context, '사진 선택을 열 수 없습니다: $e');
     }
   }
 
   Future<void> _onOpenSettings() async {
     try {
-      await AppScope.of(context).mediaRepository.openSystemSettings();
+      await openAppSettings();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('설정을 열 수 없습니다: $e')),
-      );
+      showError(context, '설정을 열 수 없습니다: $e');
     }
   }
 
@@ -159,7 +151,7 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
           if (!result.permission.hasAccess) {
             return _PermissionDeniedView(onOpenSettings: _onOpenSettings);
           }
-          final isLimited = result.permission == PermissionState.limited;
+          final isLimited = result.permission.isLimited;
           return RefreshIndicator(
             onRefresh: () async => _reload(),
             child: Column(
@@ -176,10 +168,15 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
 
   Widget _albumsBody(_AlbumsLoadResult result) {
     if (result.albums.isEmpty) {
+      // RefreshIndicator needs a scrollable child; AlwaysScrollableScrollPhysics
+      // gives the empty list pull-to-refresh.
       return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
         children: const [
-          SizedBox(height: 200),
-          Center(child: Text('앨범 없음')),
+          Padding(
+            padding: EdgeInsets.symmetric(vertical: 64),
+            child: Center(child: Text('앨범 없음')),
+          ),
         ],
       );
     }

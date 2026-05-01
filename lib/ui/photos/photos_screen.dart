@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../app.dart';
 import '../camera/camera_screen.dart';
+import '../snackbar.dart';
 import 'photo_detail_screen.dart';
 
 class PhotosScreen extends StatefulWidget {
@@ -57,9 +58,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('사진을 불러오지 못했습니다: $e')),
-      );
+      showError(context, '사진을 불러오지 못했습니다: $e');
     }
   }
 
@@ -85,7 +84,6 @@ class _PhotosScreenState extends State<PhotosScreen> {
   Future<void> _shareSelected() async {
     final assets = _items.where((a) => _selected.contains(a.id)).toList();
     if (assets.isEmpty) return;
-    setState(() => _loading = true);
     try {
       final files = await Future.wait(assets.map((a) => a.file));
       final xfiles = [
@@ -93,20 +91,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
           if (f != null) XFile(f.path),
       ];
       if (!mounted) return;
-      setState(() => _loading = false);
       if (xfiles.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('공유할 파일을 가져오지 못했습니다')),
-        );
+        showError(context, '공유할 파일을 가져오지 못했습니다');
         return;
       }
       await SharePlus.instance.share(ShareParams(files: xfiles));
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('공유 실패: $e')),
-      );
+      showError(context, '공유 실패: $e');
     }
   }
 
@@ -127,9 +119,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('삭제 실패: $e')),
-      );
+      showError(context, '삭제 실패: $e');
     }
   }
 
@@ -220,11 +210,32 @@ class _PhotosScreenState extends State<PhotosScreen> {
   }
 }
 
-class _Thumbnail extends StatelessWidget {
+class _Thumbnail extends StatefulWidget {
   const _Thumbnail({required this.asset, required this.selected});
 
   final AssetEntity asset;
   final bool selected;
+
+  @override
+  State<_Thumbnail> createState() => _ThumbnailState();
+}
+
+class _ThumbnailState extends State<_Thumbnail> {
+  // Resolve the thumbnail once per asset; rebuilding the Stack on
+  // selection changes must not retrigger the platform-channel call.
+  late Future<Uint8List?> _future = widget.asset.thumbnailDataWithSize(
+    const ThumbnailSize.square(240),
+  );
+
+  @override
+  void didUpdateWidget(_Thumbnail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.asset.id != widget.asset.id) {
+      _future = widget.asset.thumbnailDataWithSize(
+        const ThumbnailSize.square(240),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -232,7 +243,7 @@ class _Thumbnail extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         FutureBuilder<Uint8List?>(
-          future: asset.thumbnailDataWithSize(const ThumbnailSize.square(240)),
+          future: _future,
           builder: (context, snap) {
             if (snap.data == null) {
               return Container(color: Colors.grey.shade300);
@@ -244,13 +255,13 @@ class _Thumbnail extends StatelessWidget {
             );
           },
         ),
-        if (asset.type == AssetType.video)
+        if (widget.asset.type == AssetType.video)
           const Positioned(
             top: 4,
             right: 4,
             child: Icon(Icons.videocam, color: Colors.white, size: 18),
           ),
-        if (selected)
+        if (widget.selected)
           Container(
             color: Colors.black.withValues(alpha: 0.4),
             alignment: Alignment.center,
