@@ -5,9 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photo_manager/photo_manager.dart';
 
+import 'package:cubby/app.dart';
 import 'package:cubby/data/album_meta_store.dart';
 import 'package:cubby/data/media_repository.dart';
-import 'package:cubby/main.dart';
+import 'package:cubby/ui/albums/albums_screen.dart';
 
 class _FakeMediaRepository implements MediaRepository {
   @override
@@ -65,13 +66,19 @@ class _FakeAlbumMetaStore implements AlbumMetaStore {
 }
 
 void main() {
+  // Pump AlbumsScreen directly inside a fake AppScope. CubbyApp's home
+  // is now the permission gate which calls platform channels and isn't
+  // useful to exercise in a widget test.
   testWidgets('Albums screen shows loading then permission notice', (
     tester,
   ) async {
     await tester.pumpWidget(
-      CubbyApp(
-        mediaRepository: _FakeMediaRepository(),
-        albumMetaStore: _FakeAlbumMetaStore(),
+      MaterialApp(
+        home: AppScope(
+          mediaRepository: _FakeMediaRepository(),
+          albumMetaStore: _FakeAlbumMetaStore(),
+          child: const AlbumsScreen(),
+        ),
       ),
     );
 

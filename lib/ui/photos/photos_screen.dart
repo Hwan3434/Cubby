@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../app.dart';
 import '../camera/camera_screen.dart';
+import 'photo_detail_screen.dart';
 
 class PhotosScreen extends StatefulWidget {
   const PhotosScreen({super.key, required this.album});
@@ -196,7 +197,19 @@ class _PhotosScreenState extends State<PhotosScreen> {
                   return GestureDetector(
                     onLongPress: () => _toggleSelect(asset),
                     onTap: () {
-                      if (_selectionMode) _toggleSelect(asset);
+                      if (_selectionMode) {
+                        _toggleSelect(asset);
+                      } else {
+                        Navigator.push<void>(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => PhotoDetailScreen(
+                              assets: List<AssetEntity>.from(_items),
+                              initialIndex: i,
+                            ),
+                          ),
+                        );
+                      }
                     },
                     child: _Thumbnail(asset: asset, selected: selected),
                   );

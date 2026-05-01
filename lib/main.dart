@@ -4,7 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app.dart';
 import 'data/album_meta_store.dart';
 import 'data/media_repository.dart';
-import 'ui/albums/albums_screen.dart';
+import 'ui/permission_gate_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,7 +45,7 @@ class CubbyApp extends StatelessWidget {
           colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
           useMaterial3: true,
         ),
-        home: const AlbumsScreen(),
+        home: const PermissionGateScreen(),
       ),
     );
   }
