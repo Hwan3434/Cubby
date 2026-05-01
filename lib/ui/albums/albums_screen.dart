@@ -74,29 +74,50 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
     if (name == null || name.isEmpty) return;
 
     final scope = AppScope.of(context);
-    final album = await scope.mediaRepository.createAlbum(name);
-    if (!mounted) return;
-    if (album == null) {
+    try {
+      final album = await scope.mediaRepository.createAlbum(name);
+      if (!mounted) return;
+      if (album == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Android에서는 첫 사진 촬영 시 앨범이 만들어집니다'),
+          ),
+        );
+        return;
+      }
+      await scope.albumMetaStore.setCreatedAt(album.id, DateTime.now());
+      if (!mounted) return;
+      _reload();
+    } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Android에서는 첫 사진 촬영 시 앨범이 만들어집니다'),
-        ),
+        SnackBar(content: Text('앨범 생성 실패: $e')),
       );
-      return;
     }
-    await scope.albumMetaStore.setCreatedAt(album.id, DateTime.now());
-    if (!mounted) return;
-    _reload();
   }
 
   Future<void> _onPresentLimited() async {
-    await AppScope.of(context).mediaRepository.presentLimitedPicker();
-    if (!mounted) return;
-    _reload();
+    try {
+      await AppScope.of(context).mediaRepository.presentLimitedPicker();
+      if (!mounted) return;
+      _reload();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('사진 선택을 열 수 없습니다: $e')),
+      );
+    }
   }
 
   Future<void> _onOpenSettings() async {
-    await AppScope.of(context).mediaRepository.openSystemSettings();
+    try {
+      await AppScope.of(context).mediaRepository.openSystemSettings();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('설정을 열 수 없습니다: $e')),
+      );
+    }
   }
 
   @override
@@ -111,7 +132,25 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
         future: _future,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            return Center(child: Text('Error: ${snapshot.error}'));
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      '앨범을 불러오지 못했습니다.',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      onPressed: _reload,
+                      child: const Text('다시 시도'),
+                    ),
+                  ],
+                ),
+              ),
+            );
           }
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());

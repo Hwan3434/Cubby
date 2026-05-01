@@ -39,18 +39,26 @@ class _PhotosScreenState extends State<PhotosScreen> {
   Future<void> _loadMore() async {
     if (_loading || !_hasMore) return;
     setState(() => _loading = true);
-    final page = await AppScope.of(context).mediaRepository.getAssets(
-      widget.album,
-      page: _nextPage,
-      pageSize: _pageSize,
-    );
-    if (!mounted) return;
-    setState(() {
-      _items.addAll(page);
-      _nextPage++;
-      _hasMore = page.length == _pageSize;
-      _loading = false;
-    });
+    try {
+      final page = await AppScope.of(context).mediaRepository.getAssets(
+        widget.album,
+        page: _nextPage,
+        pageSize: _pageSize,
+      );
+      if (!mounted) return;
+      setState(() {
+        _items.addAll(page);
+        _nextPage++;
+        _hasMore = page.length == _pageSize;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('사진을 불러오지 못했습니다: $e')),
+      );
+    }
   }
 
   Future<void> _refresh() async {
@@ -76,16 +84,23 @@ class _PhotosScreenState extends State<PhotosScreen> {
     final repo = AppScope.of(context).mediaRepository;
     final assets = _items.where((a) => _selected.contains(a.id)).toList();
     if (assets.isEmpty) return;
-    final deletedIds = await repo.deleteAssets(assets);
-    if (!mounted) return;
-    if (deletedIds.isEmpty) {
-      // user cancelled the OS dialog
-      return;
+    try {
+      final deletedIds = await repo.deleteAssets(assets);
+      if (!mounted) return;
+      if (deletedIds.isEmpty) {
+        // user cancelled the OS dialog
+        return;
+      }
+      setState(() {
+        _items.removeWhere((a) => deletedIds.contains(a.id));
+        _selected.clear();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('삭제 실패: $e')),
+      );
     }
-    setState(() {
-      _items.removeWhere((a) => deletedIds.contains(a.id));
-      _selected.clear();
-    });
   }
 
   void _toggleSelect(AssetEntity a) {

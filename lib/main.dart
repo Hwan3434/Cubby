@@ -8,11 +8,18 @@ import 'ui/albums/albums_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final prefs = await SharedPreferences.getInstance();
+  AlbumMetaStore metaStore;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    metaStore = SharedPreferencesAlbumMetaStore(prefs);
+  } catch (_) {
+    // Disk full / corrupt prefs / first-boot edge: fall back to memory.
+    metaStore = InMemoryAlbumMetaStore();
+  }
   runApp(
     CubbyApp(
       mediaRepository: PhotoManagerMediaRepository(),
-      albumMetaStore: SharedPreferencesAlbumMetaStore(prefs),
+      albumMetaStore: metaStore,
     ),
   );
 }

@@ -47,4 +47,23 @@ void main() {
 
     expect(await store.getCreatedAt('album-1'), isNull);
   });
+
+  group('InMemoryAlbumMetaStore', () {
+    test('round-trips and isolates entries', () async {
+      final store = InMemoryAlbumMetaStore();
+      final a = DateTime.utc(2026, 1, 1);
+      final b = DateTime.utc(2026, 6, 1);
+
+      expect(await store.getCreatedAt('x'), isNull);
+      await store.setCreatedAt('x', a);
+      await store.setCreatedAt('y', b);
+
+      expect(await store.getCreatedAt('x'), a);
+      expect(await store.getCreatedAt('y'), b);
+
+      await store.remove('x');
+      expect(await store.getCreatedAt('x'), isNull);
+      expect(await store.getCreatedAt('y'), b);
+    });
+  });
 }

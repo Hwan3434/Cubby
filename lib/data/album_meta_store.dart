@@ -34,3 +34,23 @@ class SharedPreferencesAlbumMetaStore implements AlbumMetaStore {
     return _prefs.remove(_key(albumId));
   }
 }
+
+/// In-memory fallback used when SharedPreferences is unavailable.
+/// Loses createdAt across app restarts, which is acceptable; the system
+/// album survives, just without our display-only timestamp.
+class InMemoryAlbumMetaStore implements AlbumMetaStore {
+  final Map<String, DateTime> _data = {};
+
+  @override
+  Future<DateTime?> getCreatedAt(String albumId) async => _data[albumId];
+
+  @override
+  Future<void> setCreatedAt(String albumId, DateTime createdAt) async {
+    _data[albumId] = createdAt;
+  }
+
+  @override
+  Future<void> remove(String albumId) async {
+    _data.remove(albumId);
+  }
+}

@@ -132,16 +132,52 @@ class _CameraScreenState extends State<CameraScreen> {
     setState(() => _mode = mode);
   }
 
+  Future<void> _onPopAttemptedWhileRecording() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('녹화 중'),
+        content: const Text('나가면 녹화가 저장되지 않습니다. 중단할까요?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('계속 녹화'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('중단'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    try {
+      await _controller?.stopVideoRecording();
+    } catch (_) {
+      // discard the recording either way
+    }
+    if (!mounted) return;
+    setState(() => _recording = false);
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
+    return PopScope(
+      canPop: !_recording,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || !_recording) return;
+        _onPopAttemptedWhileRecording();
+      },
+      child: Scaffold(
         backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        title: Text(widget.album.name),
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          title: Text(widget.album.name),
+        ),
+        body: _buildBody(),
       ),
-      body: _buildBody(),
     );
   }
 
