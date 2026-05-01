@@ -1,0 +1,382 @@
+# Flutter Personal Camera Album App - Design Document
+
+> 1인 사용 목적의 Flutter 카메라/앨범 앱 설계 문서.
+> 1차 목표: Android, 2차 목표: iOS. 배포 없음, 개인 사용.
+
+-----
+
+## 1. 프로젝트 개요
+
+플러터 기반 카메라/앨범 앱. 사용자가 직접 앨범을 만들고 그 앨범 컨텍스트에서 카메라로 촬영해 사진/영상을 저장하는 구조. 시스템 사진앱과 폴더 단위로 연동되어 외부에서도 동일 앨범이 보여야 함.
+
+**개발 정책**
+
+- 표준 Flutter 패키지 위주 (커스텀 네이티브 플러그인 회피)
+- Composition + Context 기반 의존성 주입 (InheritedWidget 또는 Provider)
+- Flutter 공식 문서만으로 이해 가능한 단순 구조 유지
+
+-----
+
+## 2. 요구사항
+
+### 2.1 기능 요구사항 (확정)
+
+|ID|기능                   |비고                   |
+|--|---------------------|---------------------|
+|F1|첫 화면에 앨범 목록 표시       |앨범명 + 생성일            |
+|F2|앨범 생성                |이름 입력                |
+|F3|앨범 이름 변경             |시스템 측에도 반영           |
+|F4|앨범별 사진 목록 화면         |촬영일 내림차순 고정          |
+|F5|앨범별 카메라 화면           |해당 앨범 ID를 받아 그 앨범에 저장|
+|F6|사진/영상 삭제             |OS 권한 다이얼로그 자동 처리    |
+|F7|사진의 촬영일 표시           |EXIF/시스템 메타          |
+|F8|시스템 사진앱/갤러리에 동일 앨범 노출|폴더 단위 자동 연동          |
+
+### 2.2 명시적 비요구사항 (제외)
+
+- 드래그앤드롭 사진 순서 변경 (정렬은 촬영일로 고정)
+- 사용자 정의 정렬과 시스템 갤러리 정렬의 동기화
+- 클라우드 백업/공유
+- 사진 편집 기능
+
+-----
+
+## 3. 기술적 의사결정 기록
+
+### Decision 1: 시스템 갤러리/사진앱 연동 방식
+
+**결정**: `photo_manager` 패키지로 추상화하여 Android의 MediaStore와 iOS의 PHAssetCollection을 단일 인터페이스로 다룸.
+
+**근거**:
+
+- Android와 iOS의 미디어 모델이 근본적으로 다름 (Android = 파일 시스템 폴더, iOS = PHAssetCollection 참조 모음)
+- photo_manager가 양 플랫폼을 `AssetPathEntity`(앨범) / `AssetEntity`(사진/영상)로 추상화
+- 자체 네이티브 플러그인 작성 회피
+
+### Decision 2: 사진 정렬
+
+**결정**: 촬영일(`AssetEntity.createDateTime`) 내림차순 고정. 자체 `sortIndex` 컬럼 미관리.
+
+**근거**:
+
+- Android MediaStore에 사용자 정의 정렬 컬럼이 없음 → 시스템 갤러리에 사용자 정렬을 반영할 표준 API 부재
+- 앱 내 정렬과 시스템 정렬을 일치시키는 것이 사양상 더 중요
+
+### Decision 3: 앨범 생성일 저장 위치
+
+**결정**: `SharedPreferences`에 `(albumId, createdAtIso8601)` 매핑으로 보관.
+
+**근거**:
+
+- iOS `PHAssetCollection.startDate`는 "내부 자산 중 가장 오래된 것"을 의미하며, 빈 앨범은 nil
+- Android는 폴더 자체의 생성 시각을 안정적으로 얻을 수 없음
+- 1차 PoC는 SharedPreferences로 충분, 향후 확장 시 SQLite(Drift)로 마이그레이션
+
+### Decision 4: 카메라 촬영 → 저장 파이프라인
+
+**결정**: `camera` 패키지로 임시 위치에 촬영 → photo_manager의 editor API로 특정 앨범에 등록.
+
+**근거**:
+
+- Android scoped storage 정책상 임의 경로 직접 쓰기 불가 → MediaStore 경유 필요
+- iOS는 디스크에 단순 쓰기로는 사진 앱에 노출 안 됨 → PhotoKit 등록 필요
+- `image_picker`는 시스템 카메라 앱에 종속되어 앨범 컨텍스트 유지가 어려움
+
+-----
+
+## 4. 패키지 스택
+
+|역할         |패키지                  |버전 가이드|
+|-----------|---------------------|------|
+|시스템 미디어 추상화|`photo_manager`      |`^3.x`|
+|카메라 촬영     |`camera` (Flutter 공식)|최신    |
+|권한 처리 보조   |`permission_handler` |최신    |
+|앨범 생성일 메타  |`shared_preferences` |최신    |
+
+**의도적으로 배제**:
+
+- `image_picker` — 시스템 카메라 앱 호출 방식이라 앨범 컨텍스트 유지 어려움
+- `gallery_saver` / `image_gallery_saver` — 유지보수 둔화, 앨범 지정 기능 약함
+- `media_store_plus` — Android 전용
+
+-----
+
+## 5. 폴더 구조
+
+```
+lib/
+├─ data/
+│  ├─ media_repository.dart       # photo_manager 래퍼
+│  └─ album_meta_store.dart       # SharedPreferences 기반 앨범 생성일 저장
+├─ domain/
+│  └─ models/
+│     ├─ album.dart               # AssetPathEntity + createdAt 합성 모델
+│     └─ photo.dart               # AssetEntity 래퍼 (필요 시)
+├─ ui/
+│  ├─ albums/
+│  │  ├─ albums_screen.dart       # 앨범 목록 (생성/이름변경/진입)
+│  │  └─ album_tile.dart
+│  ├─ photos/
+│  │  ├─ photos_screen.dart       # 사진 그리드 (촬영일 정렬, 삭제)
+│  │  └─ photo_thumbnail.dart
+│  └─ camera/
+│     └─ camera_screen.dart       # 앨범 ID 받아서 촬영 → 저장
+├─ app.dart                       # InheritedWidget으로 Repository 주입
+└─ main.dart
+```
+
+-----
+
+## 6. 핵심 인터페이스 시그니처
+
+### 6.1 MediaRepository
+
+```dart
+abstract class MediaRepository {
+  /// 시스템 권한 확인/요청. iOS limited 상태 포함 처리.
+  Future<PermissionState> requestPermission();
+
+  /// 앱이 만든 사용자 앨범 목록만 반환 (시스템 스마트 앨범 제외).
+  Future<List<AssetPathEntity>> getUserAlbums();
+
+  /// 새 앨범 생성. 이미 존재하는 이름이면 그 앨범 반환.
+  Future<AssetPathEntity> createAlbum(String name);
+
+  /// 앨범 이름 변경.
+  /// Android: 폴더 rename으로 동작 → 일부 갤러리 앱 캐시 갱신 필요할 수 있음
+  /// iOS: PHAssetCollectionChangeRequest로 즉시 반영
+  Future<void> renameAlbum(AssetPathEntity album, String newName);
+
+  /// 앨범 내 사진/영상 목록. 촬영일 내림차순.
+  Future<List<AssetEntity>> getAssets(
+    AssetPathEntity album, {
+    int page = 0,
+    int pageSize = 80,
+  });
+
+  /// 카메라 촬영물을 특정 앨범에 저장.
+  /// Android: MediaStore에 INSERT (DCIM/[albumName]/ 또는 Pictures/[albumName]/)
+  /// iOS: PHAssetCreationRequest + 앨범에 addAssets
+  Future<AssetEntity> saveImage({
+    required Uint8List bytes,
+    required String filename,
+    required AssetPathEntity album,
+  });
+
+  Future<AssetEntity> saveVideo({
+    required File file,
+    required String filename,
+    required AssetPathEntity album,
+  });
+
+  /// 사진/영상 삭제.
+  /// Android 11+: 시스템 동의 다이얼로그 자동 표시
+  /// iOS: 휴지통 이동 다이얼로그 자동 표시
+  Future<List<String>> deleteAssets(List<AssetEntity> assets);
+}
+```
+
+### 6.2 AlbumMetaStore
+
+```dart
+abstract class AlbumMetaStore {
+  Future<DateTime?> getCreatedAt(String albumId);
+  Future<void> setCreatedAt(String albumId, DateTime createdAt);
+  Future<void> remove(String albumId);
+}
+```
+
+### 6.3 Album 도메인 모델
+
+```dart
+class Album {
+  final AssetPathEntity source;     // 시스템 앨범 핸들
+  final DateTime? createdAt;        // 자체 메타 (없으면 첫 사진 촬영일로 fallback)
+
+  String get id => source.id;
+  String get name => source.name;
+  Future<int> get assetCount => source.assetCountAsync;
+}
+```
+
+-----
+
+## 7. 권한 설정
+
+### 7.1 Android (`android/app/src/main/AndroidManifest.xml`)
+
+```xml
+<!-- 미디어 읽기 (Android 13+) -->
+<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+
+<!-- 미디어 읽기 (Android 12 이하) -->
+<uses-permission
+    android:name="android.permission.READ_EXTERNAL_STORAGE"
+    android:maxSdkVersion="32" />
+
+<!-- 카메라/마이크 -->
+<uses-permission android:name="android.permission.CAMERA" />
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+<!-- (선택) 촬영 위치 EXIF 보존 -->
+<uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
+<application ...>
+    <!-- ... -->
+</application>
+```
+
+**Gradle 설정**:
+
+- `compileSdk` 34+
+- `minSdk` 21+ 권장
+- `targetSdk` 34 권장
+
+### 7.2 iOS (`ios/Runner/Info.plist`)
+
+```xml
+<key>NSPhotoLibraryUsageDescription</key>
+<string>앨범과 사진을 보기 위해 사진 접근 권한이 필요합니다.</string>
+
+<key>NSPhotoLibraryAddUsageDescription</key>
+<string>촬영한 사진을 앨범에 저장하기 위해 권한이 필요합니다.</string>
+
+<key>NSCameraUsageDescription</key>
+<string>사진과 영상 촬영을 위해 카메라 권한이 필요합니다.</string>
+
+<key>NSMicrophoneUsageDescription</key>
+<string>영상 촬영을 위해 마이크 권한이 필요합니다.</string>
+```
+
+**최소 iOS 버전**: 12.0 권장 (photo_manager 호환)
+
+-----
+
+## 8. OS별 주요 차이
+
+### 8.1 Android
+
+- **저장 경로**: `DCIM/[앨범명]/` 또는 `Pictures/[앨범명]/`로 저장 시 시스템 갤러리에 자동 노출
+- **권한 모델**: 앱이 만든 파일은 권한 없이 자유롭게 읽기/쓰기 가능. 다른 앱이 만든 파일 수정/삭제는 `MediaStore.createWriteRequest()` / `createDeleteRequest()` 다이얼로그 필요
+- **앱 재설치 시**: 이전에 만든 파일에 대한 쓰기 권한을 자동으로 잃음 → 사용자 동의 다이얼로그 필요
+- **앨범 이름 변경**: 폴더 rename으로 구현됨. 일부 갤러리 앱은 캐시 갱신까지 잠깐 빈 앨범처럼 보일 수 있음
+
+### 8.2 iOS
+
+- **모델 차이**: 파일 시스템 직접 노출 X. 모든 사진은 "라이브러리"에 원본이 있고, 앨범은 그 사진들의 참조 모음일 뿐. 같은 사진이 여러 앨범에 들어갈 수 있음
+- **Limited Photos** (iOS 14+): 사용자가 "선택한 사진만 허용" 모드를 고를 수 있음. `PermissionState.limited` 분기 처리 필수
+- **HEIC 형식**: iOS 기본 촬영 포맷이 HEIC. Flutter `Image` 위젯이 HEIC 직접 렌더링 불가 → photo_manager의 thumbnail API 사용 또는 JPEG 변환
+- **iCloud 사진**: 원본이 iCloud에만 있는 경우 다운로드 콜백(`progressHandler`) 처리 필요
+- **앨범 이름 사용자 변경 가능성**: 사용자가 사진 앱에서 앨범 이름을 직접 바꾸면 앱과 어긋남. 표시 전 시스템 값 재조회 필요
+
+-----
+
+## 9. 카메라 → 저장 파이프라인 (의사 코드)
+
+```dart
+Future<AssetEntity> capturePhoto({
+  required CameraController controller,
+  required AssetPathEntity targetAlbum,
+}) async {
+  // 1. 임시 위치에 촬영
+  final XFile xfile = await controller.takePicture();
+  final Uint8List bytes = await xfile.readAsBytes();
+
+  // 2. photo_manager로 시스템 미디어 저장소에 등록
+  //    (Android: MediaStore INSERT, iOS: PHAssetCreationRequest)
+  final AssetEntity asset = await PhotoManager.editor.saveImage(
+    bytes,
+    filename: 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg',
+    relativePath: 'DCIM/${targetAlbum.name}', // Android에서만 의미 있음
+  );
+
+  // 3. iOS의 경우 앨범에 명시적으로 추가
+  if (Platform.isIOS) {
+    await PhotoManager.editor.darwin.copyAssetToAlbum(
+      asset: asset,
+      pathEntity: targetAlbum,
+    );
+  }
+
+  // 4. 임시 파일 정리
+  await File(xfile.path).delete().catchError((_) {});
+
+  return asset;
+}
+```
+
+> 위 코드는 패키지 API 시그니처 기준 의사 코드. 실제 photo_manager 최신 버전 API 확인 필요.
+
+-----
+
+## 10. 알려진 함정 (Known Pitfalls)
+
+|함정                      |영향                   |대응                             |
+|------------------------|---------------------|-------------------------------|
+|HEIC 렌더링 불가             |iOS에서 사진 표시 깨짐       |thumbnail API 사용, 필요 시 JPEG 변환 |
+|Limited Photos 모드       |iOS에서 일부만 보임         |`PermissionState.limited` UI 안내|
+|iCloud 미다운로드 자산         |iOS에서 원본 접근 실패       |progressHandler로 다운로드 처리       |
+|앱 재설치 후 권한 손실           |Android에서 기존 파일 수정 불가|createWriteRequest 다이얼로그       |
+|앨범 이름 변경 시 캐시           |Android 갤러리에서 잠깐 빈 폴더|본인 사용이면 무시 가능                  |
+|PHAssetCollection 사용자 변경|iOS에서 앱과 이름 어긋남      |표시 전 시스템 값 재조회                 |
+|빈 앨범 생성일 nil            |표시할 값 없음             |SharedPreferences로 자체 보관       |
+
+-----
+
+## 11. 개발 단계 (PoC 로드맵)
+
+### Phase 1: 기반 (반나절)
+
+- 프로젝트 생성, 패키지 추가, 권한 설정
+- `MediaRepository` 인터페이스 정의 + photo_manager 구현체
+- 권한 요청 + 앨범 목록 화면 (시스템 기존 앨범 표시)
+
+### Phase 2: 앨범 CRUD (반나절)
+
+- 앨범 생성/이름변경
+- `AlbumMetaStore` 구현 + 생성일 표시
+- 앨범 목록 UI 완성
+
+### Phase 3: 카메라 → 저장 (1일) — 가장 까다로움
+
+- 카메라 화면 (`camera` 패키지)
+- 촬영 → 임시 저장 → photo_manager로 앨범에 등록
+- Android/iOS 모두에서 시스템 갤러리에 노출 확인
+
+### Phase 4: 사진 목록 + 삭제 (반나절)
+
+- 사진 그리드 (촬영일 정렬, 페이지네이션)
+- 촬영일 표시
+- 삭제 (시스템 다이얼로그 흐름)
+
+### Phase 5: 영상 + 마무리 (반나절)
+
+- 영상 촬영
+- iOS Limited Photos 처리
+- 에러 처리, 로깅
+
+**예상 총 작업량**: 1인 기준 4~5일
+
+-----
+
+## 12. 향후 확장 시 고려사항
+
+배포로 전환 시 추가 검토 필요한 항목들 (현 PoC 범위 외):
+
+- 자체 메타 DB를 SharedPreferences → SQLite(Drift) 마이그레이션
+- 앨범 커버 이미지 캐싱 전략
+- 다중 선택 (멀티셀렉트) UI
+- 사진 상세 뷰 + Hero 애니메이션
+- 영상 플레이어 통합 (`video_player`)
+- 백업/내보내기
+- 다국어 (특히 iOS 시스템 앨범명 로컬라이즈)
+
+-----
+
+## 13. 참고 자료
+
+- [photo_manager - pub.dev](https://pub.dev/packages/photo_manager)
+- [Android Scoped Storage 공식 문서](https://developer.android.com/training/data-storage/shared/media)
+- [Apple PhotoKit 공식 문서](https://developer.apple.com/documentation/photos)
+- [camera plugin - pub.dev](https://pub.dev/packages/camera)
