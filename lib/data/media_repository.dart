@@ -104,7 +104,10 @@ class PhotoManagerMediaRepository implements MediaRepository {
     final asset = await PhotoManager.editor.saveImage(
       bytes,
       filename: filename,
-      relativePath: 'Pictures/${album.name}',
+      relativePath: await _relativePathFor(
+        album,
+        fallback: 'Pictures/${album.name}',
+      ),
     );
     if (Platform.isIOS || Platform.isMacOS) {
       return PhotoManager.editor.copyAssetToPath(
@@ -124,7 +127,10 @@ class PhotoManagerMediaRepository implements MediaRepository {
     final asset = await PhotoManager.editor.saveVideo(
       file,
       title: filename,
-      relativePath: 'Movies/${album.name}',
+      relativePath: await _relativePathFor(
+        album,
+        fallback: 'Movies/${album.name}',
+      ),
     );
     if (Platform.isIOS || Platform.isMacOS) {
       return PhotoManager.editor.copyAssetToPath(
@@ -133,6 +139,19 @@ class PhotoManagerMediaRepository implements MediaRepository {
       );
     }
     return asset;
+  }
+
+  // Use the album's existing bucket path on Android so we don't fork the
+  // album into a duplicate bucket with the same display name. iOS ignores
+  // relativePath entirely; the fallback only matters when the album hasn't
+  // materialised yet (Android empty-album case).
+  Future<String> _relativePathFor(
+    AssetPathEntity album, {
+    required String fallback,
+  }) async {
+    final existing = await album.relativePathAsync;
+    if (existing != null && existing.isNotEmpty) return existing;
+    return fallback;
   }
 
   @override
