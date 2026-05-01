@@ -1,5 +1,21 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Media read (Android 13+) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+
+    <!-- Media read (Android 12 and below) -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- Camera + microphone (for video) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Preserve location EXIF on captured media (optional) -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
    <application
         android:label="Cubby"
         android:name="${applicationName}"
