@@ -3,7 +3,6 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../../app.dart';
-import '../../domain/models/album.dart';
 import '../photos/photos_screen.dart';
 import '../snackbar.dart';
 
@@ -33,8 +32,7 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
     final albums = await Future.wait(
       entities.map((e) async {
         final count = await e.assetCountAsync;
-        final createdAt = await scope.albumMetaStore.getCreatedAt(e.id);
-        return Album(source: e, assetCount: count, createdAt: createdAt);
+        return _LoadedAlbum(source: e, assetCount: count);
       }),
     );
     return _AlbumsLoadResult(permission: permission, albums: albums);
@@ -83,8 +81,6 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
         showError(context, 'Android에서는 첫 사진 촬영 시 앨범이 만들어집니다');
         return;
       }
-      await scope.albumMetaStore.setCreatedAt(album.id, DateTime.now());
-      if (!mounted) return;
       _reload();
     } catch (e) {
       if (!mounted) return;
@@ -185,8 +181,8 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
       itemBuilder: (context, index) {
         final album = result.albums[index];
         return ListTile(
-          title: Text(album.name),
-          subtitle: Text(_subtitle(album)),
+          title: Text(album.source.name),
+          subtitle: Text('${album.assetCount} items'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () async {
             await Navigator.push<void>(
@@ -202,28 +198,20 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
       },
     );
   }
-
-  String _subtitle(Album album) {
-    final parts = <String>['${album.assetCount} items'];
-    if (album.createdAt != null) {
-      parts.add(_formatDate(album.createdAt!));
-    }
-    return parts.join(' · ');
-  }
-
-  String _formatDate(DateTime d) {
-    final l = d.toLocal();
-    return '${l.year}-${_pad(l.month)}-${_pad(l.day)}';
-  }
-
-  String _pad(int n) => n.toString().padLeft(2, '0');
 }
 
 class _AlbumsLoadResult {
   const _AlbumsLoadResult({required this.permission, required this.albums});
 
   final PermissionState permission;
-  final List<Album> albums;
+  final List<_LoadedAlbum> albums;
+}
+
+class _LoadedAlbum {
+  const _LoadedAlbum({required this.source, required this.assetCount});
+
+  final AssetPathEntity source;
+  final int assetCount;
 }
 
 class _PermissionDeniedView extends StatelessWidget {

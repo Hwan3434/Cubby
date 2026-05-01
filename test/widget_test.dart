@@ -6,7 +6,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import 'package:cubby/app.dart';
-import 'package:cubby/data/album_meta_store.dart';
 import 'package:cubby/data/media_repository.dart';
 import 'package:cubby/ui/albums/albums_screen.dart';
 
@@ -51,21 +50,7 @@ class _FakeMediaRepository implements MediaRepository {
   Future<List<String>> deleteAssets(List<AssetEntity> assets) async => const [];
 }
 
-class _FakeAlbumMetaStore implements AlbumMetaStore {
-  @override
-  Future<DateTime?> getCreatedAt(String albumId) async => null;
-
-  @override
-  Future<void> setCreatedAt(String albumId, DateTime createdAt) async {}
-
-  @override
-  Future<void> remove(String albumId) async {}
-}
-
 void main() {
-  // Pump AlbumsScreen directly inside a fake AppScope. CubbyApp's home
-  // is now the permission gate which calls platform channels and isn't
-  // useful to exercise in a widget test.
   testWidgets('Albums screen shows loading then permission notice', (
     tester,
   ) async {
@@ -73,7 +58,6 @@ void main() {
       MaterialApp(
         home: AppScope(
           mediaRepository: _FakeMediaRepository(),
-          albumMetaStore: _FakeAlbumMetaStore(),
           child: const AlbumsScreen(),
         ),
       ),

@@ -23,7 +23,7 @@
 
 |ID|기능                   |비고                   |
 |--|---------------------|---------------------|
-|F1|첫 화면에 앨범 목록 표시       |앨범명 + 생성일            |
+|F1|첫 화면에 앨범 목록 표시       |앨범명 + 사진 수            |
 |F2|앨범 생성                |이름 입력                |
 |F4|앨범별 사진 목록 화면         |촬영일 내림차순 고정          |
 |F5|앨범별 카메라 화면           |해당 앨범 ID를 받아 그 앨범에 저장|
@@ -62,15 +62,16 @@
 - Android MediaStore에 사용자 정의 정렬 컬럼이 없음 → 시스템 갤러리에 사용자 정렬을 반영할 표준 API 부재
 - 앱 내 정렬과 시스템 정렬을 일치시키는 것이 사양상 더 중요
 
-### Decision 3: 앨범 생성일 저장 위치
+### Decision 3: 앨범 생성일 미관리
 
-**결정**: `SharedPreferences`에 `(albumId, createdAtIso8601)` 매핑으로 보관.
+**결정**: 앱 차원의 생성일 메타데이터 자체를 두지 않음.
 
 **근거**:
 
-- iOS `PHAssetCollection.startDate`는 "내부 자산 중 가장 오래된 것"을 의미하며, 빈 앨범은 nil
+- iOS `PHAssetCollection.startDate`는 "내부 자산 중 가장 오래된 것"이지 진짜 생성일이 아님; 빈 앨범은 nil
 - Android는 폴더 자체의 생성 시각을 안정적으로 얻을 수 없음
-- 1차 PoC는 SharedPreferences로 충분, 향후 확장 시 SQLite(Drift)로 마이그레이션
+- SharedPreferences로 자체 보관할 수도 있으나 앱 재설치 시 사라져 사용자에 일관성을 주지 못함
+- 결국 사진 자체의 EXIF 촬영일(F7)이 실질 정보 → 앨범 생성일은 **표시하지 않음**
 
 ### Decision 4: 카메라 촬영 → 저장 파이프라인
 
@@ -91,7 +92,6 @@
 |시스템 미디어 추상화|`photo_manager`      |`^3.x`|
 |카메라 촬영     |`camera` (Flutter 공식)|최신    |
 |권한 처리 보조   |`permission_handler` |최신    |
-|앨범 생성일 메타  |`shared_preferences` |최신    |
 
 **의도적으로 배제**:
 
@@ -106,12 +106,7 @@
 ```
 lib/
 ├─ data/
-│  ├─ media_repository.dart       # photo_manager 래퍼
-│  └─ album_meta_store.dart       # SharedPreferences 기반 앨범 생성일 저장
-├─ domain/
-│  └─ models/
-│     ├─ album.dart               # AssetPathEntity + createdAt 합성 모델
-│     └─ photo.dart               # AssetEntity 래퍼 (필요 시)
+│  └─ media_repository.dart       # photo_manager 래퍼
 ├─ ui/
 │  ├─ albums/
 │  │  ├─ albums_screen.dart       # 앨범 목록 (생성/진입)
@@ -168,29 +163,6 @@ abstract class MediaRepository {
   /// Android 11+: 시스템 동의 다이얼로그 자동 표시
   /// iOS: 휴지통 이동 다이얼로그 자동 표시
   Future<List<String>> deleteAssets(List<AssetEntity> assets);
-}
-```
-
-### 6.2 AlbumMetaStore
-
-```dart
-abstract class AlbumMetaStore {
-  Future<DateTime?> getCreatedAt(String albumId);
-  Future<void> setCreatedAt(String albumId, DateTime createdAt);
-  Future<void> remove(String albumId);
-}
-```
-
-### 6.3 Album 도메인 모델
-
-```dart
-class Album {
-  final AssetPathEntity source;     // 시스템 앨범 핸들
-  final DateTime? createdAt;        // 자체 메타 (없으면 첫 사진 촬영일로 fallback)
-
-  String get id => source.id;
-  String get name => source.name;
-  Future<int> get assetCount => source.assetCountAsync;
 }
 ```
 
@@ -322,8 +294,7 @@ Future<AssetEntity> capturePhoto({
 |iCloud 미다운로드 자산         |iOS에서 원본 접근 실패       |progressHandler로 다운로드 처리       |
 |앱 재설치 후 권한 손실           |Android에서 기존 파일 수정 불가|createWriteRequest 다이얼로그       |
 |PHAssetCollection 사용자 변경|iOS에서 앱과 이름 어긋남      |표시 전 시스템 값 재조회                 |
-|빈 앨범 생성일 nil            |표시할 값 없음             |SharedPreferences로 자체 보관       |
-|Android 빈 앨범 생성 불가       |MediaStore에 폴더만 만드는 API 없음 |`createAlbum`은 메타만 저장, 첫 자산 저장 시점에 폴더 materialize|
+|Android 빈 앨범 생성 불가       |MediaStore에 폴더만 만드는 API 없음 |UI에서 안내, 첫 자산 저장 시점에 폴더 materialize|
 
 -----
 
@@ -337,8 +308,7 @@ Future<AssetEntity> capturePhoto({
 
 ### Phase 2: 앨범 CRUD (반나절)
 
-- 앨범 생성 (이름변경은 비요구사항)
-- `AlbumMetaStore` 구현 + 생성일 표시
+- 앨범 생성 (이름변경/생성일은 비요구사항)
 - 앨범 목록 UI 완성
 
 ### Phase 3: 카메라 → 저장 (1일) — 가장 까다로움
@@ -367,11 +337,7 @@ Future<AssetEntity> capturePhoto({
 
 배포로 전환 시 추가 검토 필요한 항목들 (현 PoC 범위 외):
 
-- 자체 메타 DB를 SharedPreferences → SQLite(Drift) 마이그레이션
 - 앨범 커버 이미지 캐싱 전략
-- 다중 선택 (멀티셀렉트) UI
-- 사진 상세 뷰 + Hero 애니메이션
-- 영상 플레이어 통합 (`video_player`)
 - 백업/내보내기
 - 다국어 (특히 iOS 시스템 앨범명 로컬라이즈)
 
