@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 
+import 'data/album_meta_store.dart';
 import 'data/media_repository.dart';
 
 class AppScope extends InheritedWidget {
   const AppScope({
     super.key,
     required this.mediaRepository,
+    required this.albumMetaStore,
     required super.child,
   });
 
   final MediaRepository mediaRepository;
+  final AlbumMetaStore albumMetaStore;
 
   static AppScope of(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<AppScope>();
@@ -19,5 +22,6 @@ class AppScope extends InheritedWidget {
 
   @override
   bool updateShouldNotify(AppScope oldWidget) =>
-      mediaRepository != oldWidget.mediaRepository;
+      mediaRepository != oldWidget.mediaRepository ||
+      albumMetaStore != oldWidget.albumMetaStore;
 }

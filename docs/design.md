@@ -329,6 +329,8 @@ Future<AssetEntity> capturePhoto({
 |앨범 이름 변경 시 캐시           |Android 갤러리에서 잠깐 빈 폴더|본인 사용이면 무시 가능                  |
 |PHAssetCollection 사용자 변경|iOS에서 앱과 이름 어긋남      |표시 전 시스템 값 재조회                 |
 |빈 앨범 생성일 nil            |표시할 값 없음             |SharedPreferences로 자체 보관       |
+|Android 빈 앨범 생성 불가       |MediaStore에 폴더만 만드는 API 없음 |`createAlbum`은 메타만 저장, 첫 자산 저장 시점에 폴더 materialize|
+|`renameAlbum` photo_manager 미지원|3.9 기준 Darwin/Android Editor 모두 rename 메서드 없음|MVP에서 보류. 필요 시 native channel 추가|
 
 -----
 
