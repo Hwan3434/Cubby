@@ -74,6 +74,13 @@ class PhotoManagerMediaRepository implements MediaRepository {
       type: RequestType.common,
       onlyAll: false,
       hasAll: false,
+      // iOS: exclude smart albums (Recents, Favorites, Screenshots, ...).
+      // Android has no smart-album concept; this filter is iOS-only.
+      pathFilterOption: const PMPathFilter(
+        darwin: PMDarwinPathFilter(
+          type: [PMDarwinAssetCollectionType.album],
+        ),
+      ),
     );
   }
 
