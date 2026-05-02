@@ -1,26 +1,25 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../../app.dart';
 import '../../data/media_repository.dart';
 import '../camera/camera_screen.dart';
 import '../snackbar.dart';
-import 'photo_detail_route.dart';
-import 'video_detail_route.dart';
+import 'media_detail_route.dart';
 
-class PhotosScreen extends StatefulWidget {
+class PhotosScreen extends ConsumerStatefulWidget {
   const PhotosScreen({super.key, required this.album});
 
   final AlbumDisplay album;
 
   @override
-  State<PhotosScreen> createState() => _PhotosScreenState();
+  ConsumerState<PhotosScreen> createState() => _PhotosScreenState();
 }
 
-class _PhotosScreenState extends State<PhotosScreen> {
+class _PhotosScreenState extends ConsumerState<PhotosScreen> {
   static const _pageSize = 80;
 
   // Maximum number of items the user can have selected at once. Hard
@@ -71,7 +70,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
     }
     setState(() => _loading = true);
     try {
-      final page = await AppScope.of(context).mediaRepository.getAssets(
+      final page = await ref.read(mediaRepositoryProvider).getAssets(
         _album,
         page: _nextPage,
         pageSize: _pageSize,
@@ -106,7 +105,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
   Future<void> _promoteIfPlaceholder() async {
     if (!_isPlaceholder) return;
     final albums =
-        await AppScope.of(context).mediaRepository.getUserAlbums();
+        await ref.read(mediaRepositoryProvider).getUserAlbums();
     if (!mounted) return;
     final promoted = albums.whereType<RealAlbum>().where(
       (a) => a.name == _album.name,
@@ -117,19 +116,21 @@ class _PhotosScreenState extends State<PhotosScreen> {
   }
 
   void _openDetail(int index) {
-    final asset = _items[index];
-    final seed = _thumbBytes[asset.id];
-    if (seed == null) {
-      // Thumbnail hasn't decoded yet — extremely rare since the user
-      // had to see the cell to tap it. Skip rather than launching the
-      // detail with a blank Hero (which makes the flight invisible).
-      return;
-    }
-    if (asset.type == AssetType.video) {
-      openVideoDetail(context, asset: asset, seedBytes: seed);
-    } else {
-      openPhotoDetail(context, asset: asset, seedBytes: seed);
-    }
+    openMediaDetail(
+      context,
+      assets: List.unmodifiable(_items),
+      initialIndex: index,
+      albumId: _album.name,
+      seedThumbs: Map.unmodifiable(_thumbBytes),
+      onAssetDeleted: (assetId) {
+        if (!mounted) return;
+        setState(() {
+          _items.removeWhere((a) => a.id == assetId);
+          _selected.remove(assetId);
+          _thumbBytes.remove(assetId);
+        });
+      },
+    );
   }
 
   Future<void> _openCamera() async {
@@ -165,7 +166,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
   }
 
   Future<void> _deleteSelected() async {
-    final repo = AppScope.of(context).mediaRepository;
+    final repo = ref.read(mediaRepositoryProvider);
     final assets = _items.where((a) => _selected.contains(a.id)).toList();
     if (assets.isEmpty) return;
     try {
@@ -406,18 +407,9 @@ class _ThumbnailState extends State<_Thumbnail> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        Hero(
-          tag: photoHeroTag(widget.asset.id),
-          // Same widget structure the detail route uses for its Hero
-          // child: a plain Image.memory(bytes). When bytes aren't
-          // ready yet (very first frame after install / cold scroll
-          // into a brand-new cell) we fall back to a neutral grey so
-          // we don't create a different widget shape that would force
-          // Hero to interpolate between mismatched trees.
-          child: bytes == null
-              ? Container(color: Colors.grey.shade300)
-              : Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true),
-        ),
+        bytes == null
+            ? Container(color: Colors.grey.shade300)
+            : Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true),
         if (widget.asset.type == AssetType.video)
           const Positioned(
             top: 4,
