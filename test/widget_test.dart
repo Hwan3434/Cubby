@@ -17,17 +17,15 @@ class _FakeMediaRepository implements MediaRepository {
   Future<void> presentLimitedPicker() async {}
 
   @override
-  Future<List<AssetPathEntity>> getUserAlbums() async => const [];
+  Future<List<AlbumDisplay>> getUserAlbums() async => const [];
 
   @override
-  Future<AssetPathEntity?> findAlbumByName(String name) async => null;
-
-  @override
-  Future<AssetPathEntity?> createAlbum(String name) async => null;
+  Future<AlbumDisplay> createAlbum(String name) =>
+      throw UnimplementedError();
 
   @override
   Future<List<AssetEntity>> getAssets(
-    AssetPathEntity album, {
+    AlbumDisplay album, {
     int page = 0,
     int pageSize = 80,
   }) async => const [];
@@ -36,14 +34,14 @@ class _FakeMediaRepository implements MediaRepository {
   Future<AssetEntity> saveImage({
     required Uint8List bytes,
     required String filename,
-    required AssetPathEntity album,
+    required AlbumDisplay album,
   }) => throw UnimplementedError();
 
   @override
   Future<AssetEntity> saveVideo({
     required File file,
     required String filename,
-    required AssetPathEntity album,
+    required AlbumDisplay album,
   }) => throw UnimplementedError();
 
   @override

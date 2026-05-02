@@ -126,6 +126,8 @@ lib/
 
 ### 6.1 MediaRepository
 
+> 아래 시그니처는 초기 설계 스케치. 실제 구현은 `AlbumDisplay` (sealed: `RealAlbum` / `PlaceholderAlbum`)를 도입해 Android 빈 앨범 함정을 해소함. 최신 계약은 [`lib/data/media_repository.dart`](../lib/data/media_repository.dart) 참고.
+
 ```dart
 abstract class MediaRepository {
   /// 시스템 권한 확인/요청. iOS limited 상태 포함 처리.
@@ -176,6 +178,10 @@ abstract class MediaRepository {
 <!-- 미디어 읽기 (Android 13+) -->
 <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+
+<!-- 부분 권한 (Android 14+): 사용자가 일부 사진만 허용한 상태에서
+     시스템 사진 선택기로 추가 허용 다이얼로그를 띄우는 데 필요 -->
+<uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
 
 <!-- 미디어 읽기 (Android 12 이하) -->
 <uses-permission
@@ -294,7 +300,7 @@ Future<AssetEntity> capturePhoto({
 |iCloud 미다운로드 자산         |iOS에서 원본 접근 실패       |progressHandler로 다운로드 처리       |
 |앱 재설치 후 권한 손실           |Android에서 기존 파일 수정 불가|createWriteRequest 다이얼로그       |
 |PHAssetCollection 사용자 변경|iOS에서 앱과 이름 어긋남      |표시 전 시스템 값 재조회                 |
-|Android 빈 앨범 생성 불가       |MediaStore에 폴더만 만드는 API 없음 |UI에서 안내, 첫 자산 저장 시점에 폴더 materialize|
+|Android 빈 앨범 생성 불가       |MediaStore에 폴더만 만드는 API 없음 |메모리 전용 `PlaceholderAlbum` 도입. 사용자에겐 즉시 앨범으로 보이고, 첫 자산 저장 시 시스템 폴더가 materialise되며 자동 promote. 영속성 없음 (앱 재시작 시 자리표시자는 사라짐).|
 
 -----
 

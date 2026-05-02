@@ -3,6 +3,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../../app.dart';
+import '../../data/media_repository.dart';
 import '../photos/photos_screen.dart';
 import '../snackbar.dart';
 
@@ -28,13 +29,7 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
     if (!permission.hasAccess) {
       return _AlbumsLoadResult(permission: permission, albums: const []);
     }
-    final entities = await scope.mediaRepository.getUserAlbums();
-    final albums = await Future.wait(
-      entities.map((e) async {
-        final count = await e.assetCountAsync;
-        return _LoadedAlbum(source: e, assetCount: count);
-      }),
-    );
+    final albums = await scope.mediaRepository.getUserAlbums();
     return _AlbumsLoadResult(permission: permission, albums: albums);
   }
 
@@ -45,43 +40,21 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
   }
 
   Future<void> _showCreateDialog() async {
-    final controller = TextEditingController();
     final name = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('새 앨범'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(hintText: '앨범 이름'),
-          autofocus: true,
-          textInputAction: TextInputAction.done,
-          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('만들기'),
-          ),
-        ],
-      ),
+      builder: (_) => const _CreateAlbumDialog(),
     );
-    controller.dispose();
     if (!mounted) return;
     if (name == null || name.isEmpty) return;
 
     final scope = AppScope.of(context);
     try {
-      final album = await scope.mediaRepository.createAlbum(name);
+      await scope.mediaRepository.createAlbum(name);
       if (!mounted) return;
-      if (album == null) {
-        showError(context, 'Android에서는 첫 사진 촬영 시 앨범이 만들어집니다');
-        return;
-      }
       _reload();
+    } on DuplicateAlbumException {
+      if (!mounted) return;
+      showError(context, '이미 같은 이름의 앨범이 있습니다');
     } catch (e) {
       if (!mounted) return;
       showError(context, '앨범 생성 실패: $e');
@@ -116,48 +89,51 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
         onPressed: _showCreateDialog,
         child: const Icon(Icons.add),
       ),
-      body: FutureBuilder<_AlbumsLoadResult>(
-        future: _future,
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text(
-                      '앨범을 불러오지 못했습니다.',
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton(
-                      onPressed: _reload,
-                      child: const Text('다시 시도'),
-                    ),
-                  ],
+      body: SafeArea(
+        top: false,
+        child: FutureBuilder<_AlbumsLoadResult>(
+          future: _future,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        '앨범을 불러오지 못했습니다.',
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 16),
+                      FilledButton(
+                        onPressed: _reload,
+                        child: const Text('다시 시도'),
+                      ),
+                    ],
+                  ),
                 ),
+              );
+            }
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final result = snapshot.data!;
+            if (!result.permission.hasAccess) {
+              return _PermissionDeniedView(onOpenSettings: _onOpenSettings);
+            }
+            final isLimited = result.permission.isLimited;
+            return RefreshIndicator(
+              onRefresh: () async => _reload(),
+              child: Column(
+                children: [
+                  if (isLimited) _LimitedBanner(onTap: _onPresentLimited),
+                  Expanded(child: _albumsBody(result)),
+                ],
               ),
             );
-          }
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final result = snapshot.data!;
-          if (!result.permission.hasAccess) {
-            return _PermissionDeniedView(onOpenSettings: _onOpenSettings);
-          }
-          final isLimited = result.permission.isLimited;
-          return RefreshIndicator(
-            onRefresh: () async => _reload(),
-            child: Column(
-              children: [
-                if (isLimited) _LimitedBanner(onTap: _onPresentLimited),
-                Expanded(child: _albumsBody(result)),
-              ],
-            ),
-          );
-        },
+          },
+        ),
       ),
     );
   }
@@ -180,15 +156,23 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
       itemCount: result.albums.length,
       itemBuilder: (context, index) {
         final album = result.albums[index];
+        final isPlaceholder = album is PlaceholderAlbum;
         return ListTile(
-          title: Text(album.source.name),
-          subtitle: Text('${album.assetCount} items'),
+          leading: Icon(
+            isPlaceholder
+                ? Icons.photo_album_outlined
+                : Icons.photo_library,
+          ),
+          title: Text(album.name),
+          subtitle: Text(
+            isPlaceholder ? '사진 추가 대기 중' : '${album.assetCount} items',
+          ),
           trailing: const Icon(Icons.chevron_right),
           onTap: () async {
             await Navigator.push<void>(
               context,
               MaterialPageRoute(
-                builder: (_) => PhotosScreen(album: album.source),
+                builder: (_) => PhotosScreen(album: album),
               ),
             );
             if (!mounted) return;
@@ -204,14 +188,7 @@ class _AlbumsLoadResult {
   const _AlbumsLoadResult({required this.permission, required this.albums});
 
   final PermissionState permission;
-  final List<_LoadedAlbum> albums;
-}
-
-class _LoadedAlbum {
-  const _LoadedAlbum({required this.source, required this.assetCount});
-
-  final AssetPathEntity source;
-  final int assetCount;
+  final List<AlbumDisplay> albums;
 }
 
 class _PermissionDeniedView extends StatelessWidget {
@@ -239,6 +216,49 @@ class _PermissionDeniedView extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _CreateAlbumDialog extends StatefulWidget {
+  const _CreateAlbumDialog();
+
+  @override
+  State<_CreateAlbumDialog> createState() => _CreateAlbumDialogState();
+}
+
+class _CreateAlbumDialogState extends State<_CreateAlbumDialog> {
+  // Owning the controller in a StatefulWidget keeps it alive until the
+  // TextField is fully torn down. Disposing it manually right after
+  // showDialog() returns races with the FocusNode/TextField teardown.
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.pop(context, _controller.text.trim());
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('새 앨범'),
+      content: TextField(
+        controller: _controller,
+        decoration: const InputDecoration(hintText: '앨범 이름'),
+        autofocus: true,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('취소'),
+        ),
+        TextButton(onPressed: _submit, child: const Text('만들기')),
+      ],
     );
   }
 }
