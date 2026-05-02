@@ -9,6 +9,7 @@ import '../../data/media_repository.dart';
 import '../camera/camera_screen.dart';
 import '../snackbar.dart';
 import 'photo_detail_route.dart';
+import 'video_detail_route.dart';
 
 class PhotosScreen extends StatefulWidget {
   const PhotosScreen({super.key, required this.album});
@@ -116,14 +117,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
   }
 
   void _openDetail(int index) {
-    // Stage 1: photo only. Videos are skipped with a notice — we'll
-    // bring them back once Hero + dim + pinch + drag-to-dismiss are
-    // confirmed solid in the custom detail route.
     final asset = _items[index];
-    if (asset.type != AssetType.image) {
-      showError(context, '영상은 아직 미리보기를 지원하지 않습니다');
-      return;
-    }
     final seed = _thumbBytes[asset.id];
     if (seed == null) {
       // Thumbnail hasn't decoded yet — extremely rare since the user
@@ -131,7 +125,11 @@ class _PhotosScreenState extends State<PhotosScreen> {
       // detail with a blank Hero (which makes the flight invisible).
       return;
     }
-    openPhotoDetail(context, asset: asset, seedBytes: seed);
+    if (asset.type == AssetType.video) {
+      openVideoDetail(context, asset: asset, seedBytes: seed);
+    } else {
+      openPhotoDetail(context, asset: asset, seedBytes: seed);
+    }
   }
 
   Future<void> _openCamera() async {
