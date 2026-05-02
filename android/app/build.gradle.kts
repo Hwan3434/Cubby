@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.cubby"
+    namespace = "dev.hwan3434.cubby"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -20,8 +20,7 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.cubby"
+        applicationId = "dev.hwan3434.cubby"
         // video_player requires Android SDK 24+.
         minSdk = 24
         targetSdk = flutter.targetSdkVersion

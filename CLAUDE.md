@@ -27,24 +27,39 @@ flutter test
 
 ## 아키텍처 한눈에
 
-- **DI**: `InheritedWidget` (`AppScope`)에 `MediaRepository`를 주입. `AppScope.of(context).mediaRepository`로 접근. Provider 같은 패키지 도입 금지 (단순 구조 유지가 정책).
-- **데이터 계층**: `MediaRepository`는 `photo_manager`를 추상화. `PhotoManagerMediaRepository`가 유일한 구현체. 테스트/대체용 fake를 만들 때는 이 인터페이스를 구현.
-- **UI 진입점**: `main.dart` → `CubbyApp` → `PermissionGateScreen` → `AlbumsScreen` → `PhotosScreen` / `CameraScreen` / `PhotoDetailScreen`.
+- **DI / 공유 상태**: **Riverpod**. `main.dart`에서 `ProviderScope`로 감싸고, 화면은 `ConsumerStatefulWidget` / `ConsumerWidget`. `MediaRepository`는 `mediaRepositoryProvider`로 주입, 사진 캐시는 `photoCacheProvider(albumId)` (family, riverpod_generator로 생성).
+- **UI 로컬 state는 setState 그대로**. 드래그 오프셋, 줌 상태, 페이지 인덱스 등 한 화면 안에서만 의미있는 상태는 provider에 안 올림.
+- **데이터 계층**: `MediaRepository`는 `photo_manager`를 추상화. `PhotoManagerMediaRepository`가 유일한 구현체. 테스트는 `mediaRepositoryProvider.overrideWithValue(fake)`로 swap.
+- **UI 진입점**: `main.dart` → `CubbyApp` → `PermissionGateScreen` → `AlbumsScreen` → `PhotosScreen` → `openPhotoDetail` / `openVideoDetail` / `CameraScreen`.
 - **사진 정렬**: 촬영일 내림차순 고정. 자체 정렬 인덱스 없음.
 
 ```
 lib/
-├─ data/media_repository.dart       # photo_manager 래퍼
+├─ data/
+│  ├─ media_repository.dart         # photo_manager 래퍼 + mediaRepositoryProvider
+│  ├─ photo_cache.dart              # photoCacheProvider family (albumId 키)
+│  └─ photo_cache.g.dart            # 자동 생성 (build_runner)
 ├─ ui/
 │  ├─ permission_gate_screen.dart   # 권한 게이트 (앱 진입)
 │  ├─ albums/albums_screen.dart
 │  ├─ photos/photos_screen.dart
-│  ├─ photos/photo_detail_screen.dart
+│  ├─ photos/photo_detail_route.dart  # 사진 풀스크린 (Hero+pinch+drag)
+│  ├─ photos/video_detail_route.dart  # 영상 풀스크린
 │  ├─ camera/camera_screen.dart
 │  └─ snackbar.dart
-├─ app.dart                         # AppScope (InheritedWidget)
+├─ app.dart
 └─ main.dart
 ```
+
+### Riverpod 코드 생성
+
+`@riverpod` annotation을 쓰는 파일을 추가/수정하면 `.g.dart`를 다시 생성해야 합니다:
+
+```bash
+dart run build_runner build
+```
+
+`.g.dart` 파일은 git에 commit합니다 (CI 없음, 항상 build_runner 보장 안 됨).
 
 ## 작업 시 반드시 지킬 정책
 

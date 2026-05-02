@@ -12,8 +12,8 @@
 **개발 정책**
 
 - 표준 Flutter 패키지 위주 (커스텀 네이티브 플러그인 회피)
-- Composition + Context 기반 의존성 주입 (InheritedWidget 또는 Provider)
-- Flutter 공식 문서만으로 이해 가능한 단순 구조 유지
+- 의존성 주입 + 공유 상태는 **Riverpod**. UI 로컬 상태(드래그/줌 등)는 `setState` 그대로
+- Flutter 공식 문서 + Riverpod 공식 문서로 이해 가능한 단순 구조 유지 (별도 도메인-특화 abstraction 도입 자제)
 
 -----
 
