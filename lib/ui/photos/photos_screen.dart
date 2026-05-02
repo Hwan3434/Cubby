@@ -5,14 +5,15 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../app.dart';
+import '../../data/media_repository.dart';
 import '../camera/camera_screen.dart';
 import '../snackbar.dart';
-import 'photo_detail_screen.dart';
+import 'photo_detail_route.dart';
 
 class PhotosScreen extends StatefulWidget {
   const PhotosScreen({super.key, required this.album});
 
-  final AssetPathEntity album;
+  final AlbumDisplay album;
 
   @override
   State<PhotosScreen> createState() => _PhotosScreenState();
@@ -21,8 +22,28 @@ class PhotosScreen extends StatefulWidget {
 class _PhotosScreenState extends State<PhotosScreen> {
   static const _pageSize = 80;
 
+  // Maximum number of items the user can have selected at once. Hard
+  // cap aligned with what the OS share sheet handles reliably; beyond
+  // that, sharing/deleting many items at once is fragile across vendors.
+  static const _selectionLimit = 20;
+
+  // The album displayed by this screen. Starts as widget.album but may be
+  // replaced with the promoted RealAlbum after the first save into a
+  // PlaceholderAlbum, so subsequent loads see the real assets.
+  late AlbumDisplay _album = widget.album;
+
   final List<AssetEntity> _items = [];
   final Set<String> _selected = {};
+  // Cache of decoded 240px thumbnail bytes the grid is showing right now,
+  // keyed by asset.id. We hand the same bytes to the detail route so its
+  // Hero destination has pixels on frame 0 of the flight; without this
+  // seed, the destination Hero is empty for ~200ms while photo_manager
+  // re-fetches the same thumbnail and the transition appears to skip.
+  final Map<String, Uint8List> _thumbBytes = {};
+  // Tracks whether the selection toolbar is showing. Decoupled from
+  // _selected.isNotEmpty so the user can enter selection mode via the
+  // AppBar button before picking anything.
+  bool _selectionMode = false;
   bool _hasMore = true;
   bool _loading = false;
   int _nextPage = 0;
@@ -37,14 +58,20 @@ class _PhotosScreenState extends State<PhotosScreen> {
     }
   }
 
-  bool get _selectionMode => _selected.isNotEmpty;
+  bool get _isPlaceholder => _album is PlaceholderAlbum;
 
   Future<void> _loadMore() async {
     if (_loading || !_hasMore) return;
+    // Placeholder albums have no assets yet; skip the platform-channel
+    // round-trip and show the empty-state message immediately.
+    if (_isPlaceholder) {
+      setState(() => _hasMore = false);
+      return;
+    }
     setState(() => _loading = true);
     try {
       final page = await AppScope.of(context).mediaRepository.getAssets(
-        widget.album,
+        _album,
         page: _nextPage,
         pageSize: _pageSize,
       );
@@ -66,18 +93,55 @@ class _PhotosScreenState extends State<PhotosScreen> {
     setState(() {
       _items.clear();
       _selected.clear();
+      _thumbBytes.clear();
       _nextPage = 0;
       _hasMore = true;
     });
     await _loadMore();
   }
 
+  // After a first-save promotes the placeholder, look up the now-real
+  // album by name and swap it in so subsequent loads work.
+  Future<void> _promoteIfPlaceholder() async {
+    if (!_isPlaceholder) return;
+    final albums =
+        await AppScope.of(context).mediaRepository.getUserAlbums();
+    if (!mounted) return;
+    final promoted = albums.whereType<RealAlbum>().where(
+      (a) => a.name == _album.name,
+    );
+    if (promoted.isNotEmpty) {
+      setState(() => _album = promoted.first);
+    }
+  }
+
+  void _openDetail(int index) {
+    // Stage 1: photo only. Videos are skipped with a notice — we'll
+    // bring them back once Hero + dim + pinch + drag-to-dismiss are
+    // confirmed solid in the custom detail route.
+    final asset = _items[index];
+    if (asset.type != AssetType.image) {
+      showError(context, '영상은 아직 미리보기를 지원하지 않습니다');
+      return;
+    }
+    final seed = _thumbBytes[asset.id];
+    if (seed == null) {
+      // Thumbnail hasn't decoded yet — extremely rare since the user
+      // had to see the cell to tap it. Skip rather than launching the
+      // detail with a blank Hero (which makes the flight invisible).
+      return;
+    }
+    openPhotoDetail(context, asset: asset, seedBytes: seed);
+  }
+
   Future<void> _openCamera() async {
     final saved = await Navigator.push<AssetEntity>(
       context,
-      MaterialPageRoute(builder: (_) => CameraScreen(album: widget.album)),
+      MaterialPageRoute(builder: (_) => CameraScreen(album: _album)),
     );
     if (!mounted || saved == null) return;
+    await _promoteIfPlaceholder();
+    if (!mounted) return;
     await _refresh();
   }
 
@@ -116,6 +180,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
       setState(() {
         _items.removeWhere((a) => deletedIds.contains(a.id));
         _selected.clear();
+        _selectionMode = false;
       });
     } catch (e) {
       if (!mounted) return;
@@ -123,13 +188,30 @@ class _PhotosScreenState extends State<PhotosScreen> {
     }
   }
 
-  void _toggleSelect(AssetEntity a) {
+  void _enterSelectionMode() {
+    if (_selectionMode) return;
+    setState(() => _selectionMode = true);
+  }
+
+  void _exitSelectionMode() {
     setState(() {
-      if (_selected.contains(a.id)) {
-        _selected.remove(a.id);
-      } else {
-        _selected.add(a.id);
-      }
+      _selectionMode = false;
+      _selected.clear();
+    });
+  }
+
+  void _toggleSelect(AssetEntity a) {
+    if (_selected.contains(a.id)) {
+      setState(() => _selected.remove(a.id));
+      return;
+    }
+    if (_selected.length >= _selectionLimit) {
+      showError(context, '최대 $_selectionLimit개까지 선택할 수 있습니다');
+      return;
+    }
+    setState(() {
+      _selectionMode = true;
+      _selected.add(a.id);
     });
   }
 
@@ -140,30 +222,43 @@ class _PhotosScreenState extends State<PhotosScreen> {
         leading: _selectionMode
             ? IconButton(
                 icon: const Icon(Icons.close),
-                onPressed: () => setState(_selected.clear),
+                onPressed: _exitSelectionMode,
               )
             : null,
         title: Text(
-          _selectionMode ? '${_selected.length} selected' : widget.album.name,
+          _selectionMode
+              ? '${_selected.length} / $_selectionLimit'
+              : _album.name,
         ),
         actions: [
           if (_selectionMode) ...[
             IconButton(
               icon: const Icon(Icons.share),
-              onPressed: _shareSelected,
+              onPressed: _selected.isEmpty ? null : _shareSelected,
             ),
             IconButton(
               icon: const Icon(Icons.delete),
-              onPressed: _deleteSelected,
+              onPressed: _selected.isEmpty ? null : _deleteSelected,
             ),
-          ] else
+          ] else ...[
+            // Hide the select button for placeholder albums (nothing to
+            // select yet) and empty real albums.
+            if (_items.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.check_box_outlined),
+                tooltip: '선택',
+                onPressed: _enterSelectionMode,
+              ),
             IconButton(
               icon: const Icon(Icons.camera_alt),
               onPressed: _openCamera,
             ),
+          ],
         ],
       ),
-      body: NotificationListener<ScrollNotification>(
+      body: SafeArea(
+        top: false,
+        child: NotificationListener<ScrollNotification>(
         onNotification: (n) {
           if (n.metrics.pixels >= n.metrics.maxScrollExtent - 200) {
             _loadMore();
@@ -171,7 +266,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
           return false;
         },
         child: _items.isEmpty && !_loading
-            ? const Center(child: Text('사진 없음'))
+            ? _EmptyState(isPlaceholder: _isPlaceholder)
             : GridView.builder(
                 padding: const EdgeInsets.all(2),
                 gridDelegate:
@@ -190,70 +285,140 @@ class _PhotosScreenState extends State<PhotosScreen> {
                       if (_selectionMode) {
                         _toggleSelect(asset);
                       } else {
-                        Navigator.push<void>(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => PhotoDetailScreen(
-                              assets: List<AssetEntity>.from(_items),
-                              initialIndex: i,
-                            ),
-                          ),
-                        );
+                        _openDetail(i);
                       }
                     },
-                    child: _Thumbnail(asset: asset, selected: selected),
+                    child: _Thumbnail(
+                      asset: asset,
+                      selected: selected,
+                      // Pass any cached bytes synchronously so the
+                      // grid cell renders Image.memory(bytes) on the
+                      // very first build — same widget structure the
+                      // detail Hero uses, which keeps the back-flight
+                      // from flickering on rebuild.
+                      cachedBytes: _thumbBytes[asset.id],
+                      onBytesLoaded: (id, bytes) {
+                        _thumbBytes[id] = bytes;
+                        // No setState here: _Thumbnail manages its own
+                        // local copy and rebuilds itself.
+                      },
+                    ),
                   );
                 },
               ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({required this.isPlaceholder});
+
+  final bool isPlaceholder;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isPlaceholder
+                  ? Icons.photo_camera_outlined
+                  : Icons.photo_library_outlined,
+              size: 64,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              isPlaceholder
+                  ? '첫 사진 촬영 시 폴더도 생성됩니다'
+                  : '사진 없음',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _Thumbnail extends StatefulWidget {
-  const _Thumbnail({required this.asset, required this.selected});
+  const _Thumbnail({
+    required this.asset,
+    required this.selected,
+    required this.cachedBytes,
+    required this.onBytesLoaded,
+  });
 
   final AssetEntity asset;
   final bool selected;
+  // Bytes the parent already has for this asset, if any. When provided
+  // we skip the platform-channel fetch entirely — important because
+  // after the detail screen pops, GridView re-mounts our cell and we
+  // want to render the same Image.memory(bytes) the Hero just landed
+  // on, with no FutureBuilder flicker in between.
+  final Uint8List? cachedBytes;
+  // Called once the 240px JPEG has been decoded. The grid screen uses
+  // this to seed the detail route so the Hero flight has matching
+  // pixels on both ends.
+  final void Function(String assetId, Uint8List bytes) onBytesLoaded;
 
   @override
   State<_Thumbnail> createState() => _ThumbnailState();
 }
 
 class _ThumbnailState extends State<_Thumbnail> {
-  // Resolve the thumbnail once per asset; rebuilding the Stack on
-  // selection changes must not retrigger the platform-channel call.
-  late Future<Uint8List?> _future = widget.asset.thumbnailDataWithSize(
-    const ThumbnailSize.square(240),
-  );
+  Uint8List? _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _bytes = widget.cachedBytes;
+    if (_bytes == null) _fetch();
+  }
 
   @override
   void didUpdateWidget(_Thumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.asset.id != widget.asset.id) {
-      _future = widget.asset.thumbnailDataWithSize(
-        const ThumbnailSize.square(240),
-      );
+      // Cell got recycled to a different asset.
+      _bytes = widget.cachedBytes;
+      if (_bytes == null) _fetch();
     }
+  }
+
+  Future<void> _fetch() async {
+    final bytes = await widget.asset.thumbnailDataWithSize(kGridThumbSize);
+    if (!mounted || bytes == null) return;
+    widget.onBytesLoaded(widget.asset.id, bytes);
+    setState(() => _bytes = bytes);
   }
 
   @override
   Widget build(BuildContext context) {
+    final bytes = _bytes;
     return Stack(
       fit: StackFit.expand,
       children: [
-        FutureBuilder<Uint8List?>(
-          future: _future,
-          builder: (context, snap) {
-            if (snap.data == null) {
-              return Container(color: Colors.grey.shade300);
-            }
-            return Image.memory(
-              snap.data!,
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
-            );
-          },
+        Hero(
+          tag: photoHeroTag(widget.asset.id),
+          // Same widget structure the detail route uses for its Hero
+          // child: a plain Image.memory(bytes). When bytes aren't
+          // ready yet (very first frame after install / cold scroll
+          // into a brand-new cell) we fall back to a neutral grey so
+          // we don't create a different widget shape that would force
+          // Hero to interpolate between mismatched trees.
+          child: bytes == null
+              ? Container(color: Colors.grey.shade300)
+              : Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true),
         ),
         if (widget.asset.type == AssetType.video)
           const Positioned(
