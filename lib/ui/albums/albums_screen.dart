@@ -1,20 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
 
-import '../../app.dart';
 import '../../data/media_repository.dart';
 import '../photos/photos_screen.dart';
 import '../snackbar.dart';
 
-class AlbumsScreen extends StatefulWidget {
+class AlbumsScreen extends ConsumerStatefulWidget {
   const AlbumsScreen({super.key});
 
   @override
-  State<AlbumsScreen> createState() => _AlbumsScreenState();
+  ConsumerState<AlbumsScreen> createState() => _AlbumsScreenState();
 }
 
-class _AlbumsScreenState extends State<AlbumsScreen> {
+class _AlbumsScreenState extends ConsumerState<AlbumsScreen> {
   Future<_AlbumsLoadResult>? _future;
 
   @override
@@ -24,12 +24,12 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
   }
 
   Future<_AlbumsLoadResult> _load() async {
-    final scope = AppScope.of(context);
-    final permission = await scope.mediaRepository.requestPermission();
+    final repo = ref.read(mediaRepositoryProvider);
+    final permission = await repo.requestPermission();
     if (!permission.hasAccess) {
       return _AlbumsLoadResult(permission: permission, albums: const []);
     }
-    final albums = await scope.mediaRepository.getUserAlbums();
+    final albums = await repo.getUserAlbums();
     return _AlbumsLoadResult(permission: permission, albums: albums);
   }
 
@@ -47,9 +47,8 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
     if (!mounted) return;
     if (name == null || name.isEmpty) return;
 
-    final scope = AppScope.of(context);
     try {
-      await scope.mediaRepository.createAlbum(name);
+      await ref.read(mediaRepositoryProvider).createAlbum(name);
       if (!mounted) return;
       _reload();
     } on DuplicateAlbumException {
@@ -63,7 +62,7 @@ class _AlbumsScreenState extends State<AlbumsScreen> {
 
   Future<void> _onPresentLimited() async {
     try {
-      await AppScope.of(context).mediaRepository.presentLimitedPicker();
+      await ref.read(mediaRepositoryProvider).presentLimitedPicker();
       if (!mounted) return;
       _reload();
     } catch (e) {

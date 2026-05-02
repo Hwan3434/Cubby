@@ -3,23 +3,23 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../app.dart';
 import '../../data/media_repository.dart';
 import '../snackbar.dart';
 
 enum _Mode { photo, video }
 
-class CameraScreen extends StatefulWidget {
+class CameraScreen extends ConsumerStatefulWidget {
   const CameraScreen({super.key, required this.album});
 
   final AlbumDisplay album;
 
   @override
-  State<CameraScreen> createState() => _CameraScreenState();
+  ConsumerState<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> {
+class _CameraScreenState extends ConsumerState<CameraScreen> {
   CameraController? _controller;
   String? _error;
   _Mode _mode = _Mode.photo;
@@ -79,7 +79,7 @@ class _CameraScreenState extends State<CameraScreen> {
       final xfile = await controller.takePicture();
       final bytes = await xfile.readAsBytes();
       if (!mounted) return;
-      final repo = AppScope.of(context).mediaRepository;
+      final repo = ref.read(mediaRepositoryProvider);
       final asset = await repo.saveImage(
         bytes: bytes,
         filename: 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg',
@@ -114,7 +114,7 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       final xfile = await controller.stopVideoRecording();
       if (!mounted) return;
-      final repo = AppScope.of(context).mediaRepository;
+      final repo = ref.read(mediaRepositoryProvider);
       final asset = await repo.saveVideo(
         file: File(xfile.path),
         filename: 'VID_${DateTime.now().millisecondsSinceEpoch}.mp4',

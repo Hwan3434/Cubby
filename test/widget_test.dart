@@ -2,10 +2,10 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photo_manager/photo_manager.dart';
 
-import 'package:cubby/app.dart';
 import 'package:cubby/data/media_repository.dart';
 import 'package:cubby/ui/albums/albums_screen.dart';
 
@@ -53,11 +53,11 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      MaterialApp(
-        home: AppScope(
-          mediaRepository: _FakeMediaRepository(),
-          child: const AlbumsScreen(),
-        ),
+      ProviderScope(
+        overrides: [
+          mediaRepositoryProvider.overrideWithValue(_FakeMediaRepository()),
+        ],
+        child: const MaterialApp(home: AlbumsScreen()),
       ),
     );
 

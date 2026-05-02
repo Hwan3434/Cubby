@@ -1,7 +1,15 @@
 import 'dart:io' show File, Platform;
 import 'dart:typed_data';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:photo_manager/photo_manager.dart';
+
+/// App-wide MediaRepository. Always returns a [PhotoManagerMediaRepository]
+/// in production; tests override the provider in [ProviderScope] to swap
+/// in a fake.
+final mediaRepositoryProvider = Provider<MediaRepository>(
+  (ref) => PhotoManagerMediaRepository(),
+);
 
 /// Unified album type used by the UI. Hides the difference between an
 /// album that exists in the system media store and an in-memory

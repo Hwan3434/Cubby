@@ -1,30 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app.dart';
-import 'data/media_repository.dart';
-import 'ui/permission_gate_screen.dart';
 
 void main() {
-  runApp(CubbyApp(mediaRepository: PhotoManagerMediaRepository()));
-}
-
-class CubbyApp extends StatelessWidget {
-  const CubbyApp({super.key, required this.mediaRepository});
-
-  final MediaRepository mediaRepository;
-
-  @override
-  Widget build(BuildContext context) {
-    return AppScope(
-      mediaRepository: mediaRepository,
-      child: MaterialApp(
-        title: 'Cubby',
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-          useMaterial3: true,
-        ),
-        home: const PermissionGateScreen(),
-      ),
-    );
-  }
+  runApp(const ProviderScope(child: CubbyApp()));
 }

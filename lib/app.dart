@@ -1,23 +1,19 @@
 import 'package:flutter/material.dart';
 
-import 'data/media_repository.dart';
+import 'ui/permission_gate_screen.dart';
 
-class AppScope extends InheritedWidget {
-  const AppScope({
-    super.key,
-    required this.mediaRepository,
-    required super.child,
-  });
-
-  final MediaRepository mediaRepository;
-
-  static AppScope of(BuildContext context) {
-    final scope = context.dependOnInheritedWidgetOfExactType<AppScope>();
-    assert(scope != null, 'AppScope not found in widget tree');
-    return scope!;
-  }
+class CubbyApp extends StatelessWidget {
+  const CubbyApp({super.key});
 
   @override
-  bool updateShouldNotify(AppScope oldWidget) =>
-      mediaRepository != oldWidget.mediaRepository;
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Cubby',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: const PermissionGateScreen(),
+    );
+  }
 }

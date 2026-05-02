@@ -24,9 +24,21 @@ class _PermissionGateScreenState extends State<PermissionGateScreen> {
   }
 
   Future<void> _request() async {
-    final status = await Permission.photos.request();
+    // Android 13+ split media into READ_MEDIA_IMAGES and
+    // READ_MEDIA_VIDEO. Permission.photos alone only covers images, so
+    // a user who hits "Allow" without ticking the (vendor-specific)
+    // video toggle ends up unable to see videos in the grid. Request
+    // both at once. iOS has a single Photos permission and maps both
+    // entries to the same prompt, so this is safe there too.
+    final results = await [
+      Permission.photos,
+      Permission.videos,
+    ].request();
     if (!mounted) return;
-    if (status.isGranted || status.isLimited) {
+    final allOk = results.values.every(
+      (s) => s.isGranted || s.isLimited,
+    );
+    if (allOk) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const AlbumsScreen()),
       );
