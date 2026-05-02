@@ -2,9 +2,10 @@ import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:photo_manager/photo_manager.dart';
+import 'package:flutter/services.dart';
 
 import '../../app.dart';
+import '../../data/media_repository.dart';
 import '../snackbar.dart';
 
 enum _Mode { photo, video }
@@ -12,7 +13,7 @@ enum _Mode { photo, video }
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key, required this.album});
 
-  final AssetPathEntity album;
+  final AlbumDisplay album;
 
   @override
   State<CameraScreen> createState() => _CameraScreenState();
@@ -28,6 +29,11 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void initState() {
     super.initState();
+    // Hide both status bar and navigation bar so the camera preview can
+    // use the full screen. Sticky variant: edge swipes briefly reveal
+    // the bars and they auto-hide again, preventing accidental taps on
+    // system UI while shooting.
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _setup();
   }
 
@@ -57,6 +63,10 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   void dispose() {
+    // Restore the normal edge-to-edge mode so other screens see the
+    // status/nav bars again. Failing to restore would leave the rest of
+    // the app immersive after the camera screen pops.
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _controller?.dispose();
     super.dispose();
   }
@@ -166,9 +176,13 @@ class _CameraScreenState extends State<CameraScreen> {
       },
       child: Scaffold(
         backgroundColor: Colors.black,
+        // Let the preview render under the (now transparent) AppBar so
+        // the camera view is truly fullscreen.
+        extendBodyBehindAppBar: true,
         appBar: AppBar(
-          backgroundColor: Colors.black,
+          backgroundColor: Colors.transparent,
           foregroundColor: Colors.white,
+          elevation: 0,
           title: Text(widget.album.name),
         ),
         body: _buildBody(),
@@ -197,30 +211,44 @@ class _CameraScreenState extends State<CameraScreen> {
       children: [
         Center(child: CameraPreview(controller)),
         if (_recording)
-          const Positioned(
-            top: 16,
-            left: 16,
-            child: _RecordingChip(),
+          const Positioned.fill(
+            child: SafeArea(
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: _RecordingChip(),
+                ),
+              ),
+            ),
           ),
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 24,
-          child: Column(
-            children: [
-              _ModeToggle(
-                mode: _mode,
-                enabled: !_recording && !_busy,
-                onChanged: _setMode,
+        Positioned.fill(
+          child: SafeArea(
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _ModeToggle(
+                      mode: _mode,
+                      enabled: !_recording && !_busy,
+                      onChanged: _setMode,
+                    ),
+                    const SizedBox(height: 16),
+                    _ShutterButton(
+                      mode: _mode,
+                      busy: _busy,
+                      recording: _recording,
+                      onTap: _mode == _Mode.photo
+                          ? _capturePhoto
+                          : _toggleRecording,
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 16),
-              _ShutterButton(
-                mode: _mode,
-                busy: _busy,
-                recording: _recording,
-                onTap: _mode == _Mode.photo ? _capturePhoto : _toggleRecording,
-              ),
-            ],
+            ),
           ),
         ),
       ],
