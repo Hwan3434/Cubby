@@ -1,3 +1,4 @@
+import 'dart:io' show File;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -65,10 +66,17 @@ class _PhotoDetailPageState extends State<_PhotoDetailPage> {
   final _viewer = TransformationController();
   bool _zoomed = false;
 
+  // Progressive image stages, layered above the Hero — see build().
+  static const _previewSize = ThumbnailSize.square(1080);
+  Uint8List? _previewBytes;
+  File? _file;
+
   @override
   void initState() {
     super.initState();
     _viewer.addListener(_onViewerChanged);
+    _loadPreview();
+    _loadFile();
   }
 
   @override
@@ -76,6 +84,18 @@ class _PhotoDetailPageState extends State<_PhotoDetailPage> {
     _viewer.removeListener(_onViewerChanged);
     _viewer.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadPreview() async {
+    final bytes = await widget.asset.thumbnailDataWithSize(_previewSize);
+    if (!mounted || bytes == null) return;
+    setState(() => _previewBytes = bytes);
+  }
+
+  Future<void> _loadFile() async {
+    final file = await widget.asset.file;
+    if (!mounted || file == null) return;
+    setState(() => _file = file);
   }
 
   void _onViewerChanged() {
@@ -104,7 +124,14 @@ class _PhotoDetailPageState extends State<_PhotoDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
+    // Transparent Scaffold so the grid still bleeds through the dim
+    // layer (we depend on opaque:false at the route level), while
+    // giving descendant Text widgets a proper Material ancestor —
+    // without one, debug builds draw yellow wavy underlines under
+    // every Text on the page.
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: Stack(
       children: [
         AnimatedBuilder(
           animation: widget.routeAnimation,
@@ -129,15 +156,42 @@ class _PhotoDetailPageState extends State<_PhotoDetailPage> {
                 transformationController: _viewer,
                 minScale: 1.0,
                 maxScale: 4.0,
-                child: Hero(
-                  tag: photoHeroTag(widget.asset.id),
-                  child: SizedBox.expand(
-                    child: Image.memory(
-                      widget.seedBytes,
-                      fit: BoxFit.contain,
-                      gaplessPlayback: true,
+                // Hero child stays a plain Image.memory(seedBytes) —
+                // structurally identical to the grid cell so the flight
+                // boundaries match. Higher-resolution stages are
+                // *outside* the Hero, layered on top with Positioned.fill,
+                // so the Hero overlay never has to interpolate between
+                // tree shapes.
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Hero(
+                      tag: photoHeroTag(widget.asset.id),
+                      child: SizedBox.expand(
+                        child: Image.memory(
+                          widget.seedBytes,
+                          fit: BoxFit.contain,
+                          gaplessPlayback: true,
+                        ),
+                      ),
                     ),
-                  ),
+                    if (_previewBytes != null)
+                      Positioned.fill(
+                        child: Image.memory(
+                          _previewBytes!,
+                          fit: BoxFit.contain,
+                          gaplessPlayback: true,
+                        ),
+                      ),
+                    if (_file != null)
+                      Positioned.fill(
+                        child: Image.file(
+                          _file!,
+                          fit: BoxFit.contain,
+                          gaplessPlayback: true,
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ),
@@ -152,6 +206,7 @@ class _PhotoDetailPageState extends State<_PhotoDetailPage> {
           ),
         ),
       ],
+      ),
     );
   }
 }
