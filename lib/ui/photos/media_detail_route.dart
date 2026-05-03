@@ -10,14 +10,18 @@ import 'package:video_player/video_player.dart';
 import '../../data/media_repository.dart';
 import '../../data/photo_cache.dart';
 import '../snackbar.dart';
+import '../theme/cubby_tokens.dart';
 
 const ThumbnailSize kGridThumbSize = ThumbnailSize.square(240);
 
 const ThumbnailSize _kPreviewThumbSize = ThumbnailSize.square(1080);
 const ThumbnailSize _kIndicatorThumbSize = ThumbnailSize.square(160);
-const double _kIndicatorCellSize = 56;
-const double _kIndicatorActiveCellSize = 64;
-const double _kIndicatorStripHeight = 88;
+
+// 디자인: 활성 56px, 비활성 38px. cell extent는 활성 셀이 들어갈 자리.
+const double _kIndicatorCellExtent = 64;
+const double _kIndicatorActiveSize = 56;
+const double _kIndicatorInactiveSize = 38;
+const double _kIndicatorStripHeight = 76;
 
 Future<void> openMediaDetail(
   BuildContext context, {
@@ -126,8 +130,8 @@ class _MediaDetailPageState extends ConsumerState<_MediaDetailPage> {
   void _centerStripOn(int index, {bool animate = true}) {
     if (!_stripController.hasClients) return;
     final viewport = _stripController.position.viewportDimension;
-    final target = index * _kIndicatorCellSize +
-        _kIndicatorCellSize / 2 -
+    final target = index * _kIndicatorCellExtent +
+        _kIndicatorCellExtent / 2 -
         viewport / 2;
     final clamped =
         target.clamp(0.0, _stripController.position.maxScrollExtent);
@@ -239,26 +243,19 @@ class _MediaDetailPageState extends ConsumerState<_MediaDetailPage> {
               ),
             ),
             Positioned(
-              top: MediaQuery.paddingOf(context).top + 8,
-              right: 8,
+              left: 0,
+              right: 0,
+              top: 0,
               child: IgnorePointer(
                 ignoring: !_chromeVisible,
                 child: AnimatedOpacity(
                   opacity: _chromeVisible ? 1 : 0,
-                  duration: const Duration(milliseconds: 150),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _OverlayIconButton(
-                        icon: Icons.share,
-                        onPressed: _share,
-                      ),
-                      const SizedBox(width: 4),
-                      _OverlayIconButton(
-                        icon: Icons.delete_outline,
-                        onPressed: _delete,
-                      ),
-                    ],
+                  duration: CubbyMotion.immersive,
+                  curve: CubbyMotion.immersiveCurve,
+                  child: _TopChrome(
+                    asset: currentAsset,
+                    index: _currentIndex,
+                    total: _assets.length,
                   ),
                 ),
               ),
@@ -271,24 +268,29 @@ class _MediaDetailPageState extends ConsumerState<_MediaDetailPage> {
                 ignoring: !_chromeVisible,
                 child: AnimatedOpacity(
                   opacity: _chromeVisible ? 1 : 0,
-                  duration: const Duration(milliseconds: 150),
-                  child: SafeArea(
-                    top: false,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (_activeVideoController != null &&
-                            currentAsset.type == AssetType.video)
-                          _VideoControls(controller: _activeVideoController!),
-                        _IndicatorStrip(
-                          assets: _assets,
-                          currentIndex: _currentIndex,
-                          seedThumbs: widget.seedThumbs,
-                          stripController: _stripController,
-                          onTap: _jumpTo,
+                  duration: CubbyMotion.immersive,
+                  curve: CubbyMotion.immersiveCurve,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_activeVideoController != null &&
+                          currentAsset.type == AssetType.video)
+                        _VideoControls(controller: _activeVideoController!),
+                      _IndicatorStrip(
+                        assets: _assets,
+                        currentIndex: _currentIndex,
+                        seedThumbs: widget.seedThumbs,
+                        stripController: _stripController,
+                        onTap: _jumpTo,
+                      ),
+                      SafeArea(
+                        top: false,
+                        child: _BottomActionBar(
+                          onShare: _share,
+                          onDelete: _delete,
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -300,20 +302,145 @@ class _MediaDetailPageState extends ConsumerState<_MediaDetailPage> {
   }
 }
 
-class _OverlayIconButton extends StatelessWidget {
-  const _OverlayIconButton({required this.icon, required this.onPressed});
+class _TopChrome extends StatelessWidget {
+  const _TopChrome({
+    required this.asset,
+    required this.index,
+    required this.total,
+  });
+
+  final AssetEntity asset;
+  final int index;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final topInset = MediaQuery.paddingOf(context).top;
+    final created = asset.createDateTime;
+    final dateLabel = _formatDateTime(created);
+    return Container(
+      padding: EdgeInsets.fromLTRB(
+        4,
+        topInset + 4,
+        4,
+        12,
+      ),
+      color: Colors.black.withValues(alpha: 0.34),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.chevron_left, color: Colors.white),
+            tooltip: '돌아가기',
+          ),
+          Expanded(
+            child: Column(
+              children: [
+                Text(
+                  dateLabel,
+                  style: CubbyType.titleSm.copyWith(
+                    fontSize: 14,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${index + 1} / $total',
+                  style: CubbyType.caption.copyWith(
+                    fontSize: 11,
+                    color: Colors.white.withValues(alpha: 0.7),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 48),
+        ],
+      ),
+    );
+  }
+
+  static String _formatDateTime(DateTime dt) {
+    final now = DateTime.now();
+    final isToday = dt.year == now.year &&
+        dt.month == now.month &&
+        dt.day == now.day;
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    if (isToday) return '오늘 $hh:$mm';
+    final yesterday = now.subtract(const Duration(days: 1));
+    if (dt.year == yesterday.year &&
+        dt.month == yesterday.month &&
+        dt.day == yesterday.day) {
+      return '어제 $hh:$mm';
+    }
+    return '${dt.month}월 ${dt.day}일 $hh:$mm';
+  }
+}
+
+class _BottomActionBar extends StatelessWidget {
+  const _BottomActionBar({required this.onShare, required this.onDelete});
+
+  final VoidCallback onShare;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(8, 10, 8, 8),
+      color: Colors.black.withValues(alpha: 0.34),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          _ViewerAction(
+            icon: Icons.ios_share,
+            label: '공유',
+            onPressed: onShare,
+          ),
+          _ViewerAction(
+            icon: Icons.delete_outline,
+            label: '삭제',
+            onPressed: onDelete,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ViewerAction extends StatelessWidget {
+  const _ViewerAction({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
 
   final IconData icon;
+  final String label;
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.black.withValues(alpha: 0.4),
-      shape: const CircleBorder(),
-      child: IconButton(
-        icon: Icon(icon, color: Colors.white),
-        onPressed: onPressed,
+    return InkWell(
+      onTap: onPressed,
+      borderRadius: const BorderRadius.all(Radius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: Colors.white, size: 22),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: CubbyType.caption.copyWith(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: Colors.white,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -628,35 +755,38 @@ class _IndicatorStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: _kIndicatorStripHeight,
-      color: Colors.black.withValues(alpha: 0.4),
+      color: Colors.black.withValues(alpha: 0.34),
       alignment: Alignment.center,
       child: ListView.builder(
         controller: stripController,
         scrollDirection: Axis.horizontal,
         itemCount: assets.length,
-        itemExtent: _kIndicatorCellSize,
-        padding: EdgeInsets.zero,
+        itemExtent: _kIndicatorCellExtent,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
         itemBuilder: (_, i) {
           final asset = assets[i];
           final selected = i == currentIndex;
+          final size =
+              selected ? _kIndicatorActiveSize : _kIndicatorInactiveSize;
           return GestureDetector(
             onTap: () => onTap(i),
             behavior: HitTestBehavior.opaque,
             child: Center(
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                width: selected
-                    ? _kIndicatorActiveCellSize
-                    : _kIndicatorCellSize - 8,
-                height: selected
-                    ? _kIndicatorActiveCellSize
-                    : _kIndicatorCellSize - 8,
+                duration: CubbyMotion.immersive,
+                curve: CubbyMotion.immersiveCurve,
+                width: size,
+                height: size,
                 decoration: BoxDecoration(
+                  borderRadius: const BorderRadius.all(Radius.circular(8)),
                   border: Border.all(
-                    color: selected ? Colors.white : Colors.transparent,
-                    width: 2,
+                    color: selected
+                        ? Colors.white
+                        : Colors.white.withValues(alpha: 0.4),
+                    width: selected ? 2 : 1,
                   ),
                 ),
+                clipBehavior: Clip.antiAlias,
                 child: _IndicatorThumb(
                   asset: asset,
                   seed: seedThumbs[asset.id],

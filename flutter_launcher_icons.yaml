@@ -1,0 +1,10 @@
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/cubby_icon.png"
+
+  adaptive_icon_background: "#faf9f5"
+  adaptive_icon_foreground: "assets/icon/cubby_icon_foreground.png"
+
+  remove_alpha_ios: true
+  background_color_ios: "#faf9f5"
