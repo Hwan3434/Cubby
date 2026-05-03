@@ -1,8 +1,13 @@
 import 'dart:io' show File, Platform;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:photo_manager/photo_manager.dart';
+
+import 'album.dart';
+import 'media_asset.dart';
+import 'photo_manager_asset.dart';
 
 /// App-wide MediaRepository. Always returns a [PhotoManagerMediaRepository]
 /// in production; tests override the provider in [ProviderScope] to swap
@@ -11,37 +16,8 @@ final mediaRepositoryProvider = Provider<MediaRepository>(
   (ref) => PhotoManagerMediaRepository(),
 );
 
-/// Unified album type used by the UI. Hides the difference between an
-/// album that exists in the system media store and an in-memory
-/// placeholder created by the user that hasn't received its first asset
-/// yet (Android cannot create empty MediaStore folders).
-sealed class AlbumDisplay {
-  String get name;
-  int get assetCount;
-}
-
-class RealAlbum extends AlbumDisplay {
-  RealAlbum({required this.source, required this.assetCount});
-
-  final AssetPathEntity source;
-  @override
-  final int assetCount;
-
-  @override
-  String get name => source.name;
-}
-
-class PlaceholderAlbum extends AlbumDisplay {
-  PlaceholderAlbum(this.name);
-
-  @override
-  final String name;
-  @override
-  int get assetCount => 0;
-}
-
-/// Thrown by [MediaRepository.createAlbum] when an album (real or
-/// placeholder) with the same name already exists.
+/// Thrown by [MediaRepository.createAlbum] when an album with the same
+/// name already exists (system or in-memory placeholder).
 class DuplicateAlbumException implements Exception {
   DuplicateAlbumException(this.name);
   final String name;
@@ -60,48 +36,51 @@ abstract class MediaRepository {
   /// User-facing album list: system albums + in-memory placeholders.
   /// Real albums take precedence if both share a name (shouldn't happen
   /// because [createAlbum] rejects duplicates, but defensive).
-  Future<List<AlbumDisplay>> getUserAlbums();
+  Future<List<Album>> getUserAlbums();
 
   /// Create a new album with the given name.
   ///
-  /// - iOS/macOS: creates an empty system album immediately.
-  /// - Android: registers an in-memory [PlaceholderAlbum]. The actual
-  ///   `Pictures/<name>/` folder materialises only when the first asset
-  ///   is saved into it via [saveImage] or [saveVideo], which also
-  ///   promotes the placeholder to a [RealAlbum] on the next list refresh.
+  /// - iOS/macOS: creates an empty system album immediately
+  ///   ([Album.origin] = system).
+  /// - Android: registers an in-memory placeholder ([Album.origin] =
+  ///   placeholder). The actual `Pictures/<name>/` folder materialises
+  ///   only when the first asset is saved into it via [saveImage] or
+  ///   [saveVideo], which also promotes the placeholder to system on the
+  ///   next list refresh.
   ///
-  /// Throws [DuplicateAlbumException] if any album (real or placeholder)
+  /// Throws [DuplicateAlbumException] if any album (system or placeholder)
   /// with the same name already exists.
-  Future<AlbumDisplay> createAlbum(String name);
+  Future<Album> createAlbum(String name);
 
-  /// Assets in [album], paged. Default photo_manager sort is createDateTime
-  /// descending, which matches F4. Returns empty for placeholders.
-  Future<List<AssetEntity>> getAssets(
-    AlbumDisplay album, {
+  /// Assets in [album], paged. Default sort is createdAt descending.
+  /// Returns empty for placeholder albums.
+  Future<List<MediaAsset>> getAssets(
+    Album album, {
     int page = 0,
     int pageSize = 80,
   });
 
   /// Save a captured image into [album].
   ///
-  /// If [album] is a [PlaceholderAlbum], the first save creates the
-  /// underlying system folder (Android) and the placeholder is removed
-  /// from the in-memory list.
-  Future<AssetEntity> saveImage({
+  /// If [album] is a placeholder, the first save creates the underlying
+  /// system folder (Android) and the placeholder is removed from the
+  /// in-memory list on the next [getUserAlbums] refresh.
+  Future<MediaAsset> saveImage({
     required Uint8List bytes,
     required String filename,
-    required AlbumDisplay album,
+    required Album album,
   });
 
-  Future<AssetEntity> saveVideo({
+  Future<MediaAsset> saveVideo({
     required File file,
     required String filename,
-    required AlbumDisplay album,
+    required Album album,
   });
 
-  /// Delete the given assets. Returns the IDs that were successfully deleted.
-  /// Android 11+ and iOS show a system confirmation dialog automatically.
-  Future<List<String>> deleteAssets(List<AssetEntity> assets);
+  /// Delete the given assets. Returns the IDs ([MediaAsset.storageKey])
+  /// that were successfully deleted. Android 11+ and iOS show a system
+  /// confirmation dialog automatically.
+  Future<List<String>> deleteAssets(List<MediaAsset> assets);
 }
 
 class PhotoManagerMediaRepository implements MediaRepository {
@@ -110,6 +89,11 @@ class PhotoManagerMediaRepository implements MediaRepository {
   // never put a photo into shouldn't persist.
   final List<String> _placeholderNames = [];
 
+  // 시스템 앨범 lookup용 캐시 (name → AssetPathEntity). UI에는 노출되지
+  // 않으며, 자산 페이징/저장 시 photo_manager 호출에 필요한 path를 찾는
+  // 데만 사용. getUserAlbums가 호출될 때마다 갱신된다.
+  final Map<String, AssetPathEntity> _pathCache = {};
+
   @override
   Future<PermissionState> requestPermission() {
     return PhotoManager.requestPermissionExtend();
@@ -117,19 +101,25 @@ class PhotoManagerMediaRepository implements MediaRepository {
 
   @override
   Future<void> presentLimitedPicker() async {
-    // Supported on iOS 14+ (Limited Photos) and Android 14+
-    // (READ_MEDIA_VISUAL_USER_SELECTED partial access). photo_manager
-    // itself no-ops on other platforms, so no extra guard is needed here.
     await PhotoManager.presentLimited();
   }
+
+  // 모든 path가 createDateTime desc 정렬 컨텍스트를 갖도록 명시. 명시 안
+  // 하면 photo_manager 내부 기본값에 따라 플랫폼별로 결과 순서가 달라져
+  // 앨범 cover에 가장 오래된 자산이 잡히는 케이스가 생긴다 (design.md §3
+  // Decision 2 — 촬영일 desc 고정).
+  static final _descByCreateDate = FilterOptionGroup(
+    orders: [
+      const OrderOption(type: OrderOptionType.createDate, asc: false),
+    ],
+  );
 
   Future<List<AssetPathEntity>> _systemAlbums() {
     return PhotoManager.getAssetPathList(
       type: RequestType.common,
       onlyAll: false,
       hasAll: false,
-      // iOS: exclude smart albums (Recents, Favorites, Screenshots, ...).
-      // Android has no smart-album concept; this filter is iOS-only.
+      filterOption: _descByCreateDate,
       pathFilterOption: const PMPathFilter(
         darwin: PMDarwinPathFilter(
           type: [PMDarwinAssetCollectionType.album],
@@ -147,31 +137,54 @@ class PhotoManagerMediaRepository implements MediaRepository {
   }
 
   @override
-  Future<List<AlbumDisplay>> getUserAlbums() async {
+  Future<List<Album>> getUserAlbums() async {
     final system = await _systemAlbums();
+    // path별로 fetchPathProperties → assetCountAsync를 한 chain으로 묶어
+    // 모든 path가 병렬로 끝까지 진행되도록. 이전엔 두 단계가 직렬이라
+    // 라운드트립이 두 번이었음.
     final realAlbums = await Future.wait(
       system.map((e) async {
-        final count = await e.assetCountAsync;
-        return RealAlbum(source: e, assetCount: count);
+        AssetPathEntity refreshed;
+        try {
+          refreshed = await e.fetchPathProperties(
+                filterOptionGroup: _descByCreateDate,
+              ) ??
+              e;
+        } catch (err) {
+          debugPrint('[repo] ${e.name} fetchPathProperties ERROR: $err');
+          refreshed = e;
+        }
+        final count = await refreshed.assetCountAsync;
+        return MapEntry(
+          refreshed,
+          Album(
+            name: refreshed.name,
+            origin: AlbumOrigin.system,
+            storedCount: count,
+          ),
+        );
       }),
     );
-    // Drop placeholders whose name now exists as a real album. This
-    // happens after a successful first-save promotes them, but is also
-    // defensive against race conditions where the system album appeared
-    // through other means (e.g. user created a folder via file manager).
-    final realNames = realAlbums.map((a) => a.name).toSet();
+    _pathCache
+      ..clear()
+      ..addEntries(
+        realAlbums.map((entry) => MapEntry(entry.key.name, entry.key)),
+      );
+    final albums = realAlbums.map((entry) => entry.value).toList();
+    final realNames = albums.map((a) => a.name).toSet();
     _placeholderNames.removeWhere(realNames.contains);
-    final placeholderAlbums = _placeholderNames
-        .map(PlaceholderAlbum.new)
-        .toList();
-    return [...realAlbums, ...placeholderAlbums];
+    final placeholderAlbums = _placeholderNames.map(
+      (name) => Album(
+        name: name,
+        origin: AlbumOrigin.placeholder,
+        storedCount: 0,
+      ),
+    );
+    return [...albums, ...placeholderAlbums];
   }
 
   @override
-  Future<AlbumDisplay> createAlbum(String name) async {
-    // Reject duplicates regardless of source (system album or another
-    // placeholder). Per UX policy: the user should never silently land
-    // in an existing album when they meant to create a new one.
+  Future<Album> createAlbum(String name) async {
     final existing = await _findSystemAlbumByName(name);
     if (existing != null) {
       throw DuplicateAlbumException(name);
@@ -183,36 +196,47 @@ class PhotoManagerMediaRepository implements MediaRepository {
     if (Platform.isIOS || Platform.isMacOS) {
       final created = await PhotoManager.editor.darwin.createAlbum(name);
       if (created == null) {
-        // photo_manager docs say this can happen if the system rejects
-        // the request; surface as duplicate so the UI can show the same
-        // message rather than a cryptic null path.
         throw DuplicateAlbumException(name);
       }
+      _pathCache[created.name] = created;
       final count = await created.assetCountAsync;
-      return RealAlbum(source: created, assetCount: count);
+      return Album(
+        name: created.name,
+        origin: AlbumOrigin.system,
+        storedCount: count,
+      );
     }
 
     // Android: register placeholder, materialised on first asset save.
     _placeholderNames.add(name);
-    return PlaceholderAlbum(name);
+    return Album(
+      name: name,
+      origin: AlbumOrigin.placeholder,
+      storedCount: 0,
+    );
   }
 
   @override
-  Future<List<AssetEntity>> getAssets(
-    AlbumDisplay album, {
+  Future<List<MediaAsset>> getAssets(
+    Album album, {
     int page = 0,
     int pageSize = 80,
   }) async {
-    if (album is PlaceholderAlbum) return const [];
-    final source = (album as RealAlbum).source;
-    return source.getAssetListPaged(page: page, size: pageSize);
+    if (album.isPlaceholder) return const [];
+    final source = await _resolvePath(album.name);
+    if (source == null) return const [];
+    final entities = await source.getAssetListPaged(
+      page: page,
+      size: pageSize,
+    );
+    return entities.map(PhotoManagerAsset.new).toList();
   }
 
   @override
-  Future<AssetEntity> saveImage({
+  Future<MediaAsset> saveImage({
     required Uint8List bytes,
     required String filename,
-    required AlbumDisplay album,
+    required Album album,
   }) async {
     final relativePath = await _resolveRelativePath(
       album,
@@ -227,10 +251,10 @@ class PhotoManagerMediaRepository implements MediaRepository {
   }
 
   @override
-  Future<AssetEntity> saveVideo({
+  Future<MediaAsset> saveVideo({
     required File file,
     required String filename,
-    required AlbumDisplay album,
+    required Album album,
   }) async {
     final relativePath = await _resolveRelativePath(
       album,
@@ -244,48 +268,66 @@ class PhotoManagerMediaRepository implements MediaRepository {
     return _afterSave(asset: asset, album: album);
   }
 
-  // For RealAlbum: reuse the existing bucket path on Android so we don't
-  // fork the album into a duplicate bucket with the same display name.
-  // For PlaceholderAlbum: there is no existing path yet; use the
-  // mediaRoot/<name>/ convention to materialise the folder.
-  // iOS ignores relativePath entirely.
+  /// 캐시된 path가 없으면 system query로 한 번 더 lookup. 외부에서 폴더가
+  /// 새로 생긴 직후 (placeholder의 첫 저장 등) 캐시 미스를 방어한다.
+  Future<AssetPathEntity?> _resolvePath(String name) async {
+    final cached = _pathCache[name];
+    if (cached != null) return cached;
+    final found = await _findSystemAlbumByName(name);
+    if (found != null) _pathCache[name] = found;
+    return found;
+  }
+
+  /// system album이면 기존 bucket path 재사용 (Android에서 같은 이름 폴더가
+  /// 두 개로 갈라지는 사고 방지). placeholder면 mediaRoot/<name>/ 컨벤션으로
+  /// 새 폴더 materialise. iOS는 relativePath 무시.
   Future<String> _resolveRelativePath(
-    AlbumDisplay album, {
+    Album album, {
     required String mediaRoot,
   }) async {
-    if (album is RealAlbum) {
-      final existing = await album.source.relativePathAsync;
+    if (album.isSystem) {
+      final source = await _resolvePath(album.name);
+      final existing = await source?.relativePathAsync;
       if (existing != null && existing.isNotEmpty) return existing;
-      return '$mediaRoot/${album.name}';
     }
     return '$mediaRoot/${album.name}';
   }
 
-  Future<AssetEntity> _afterSave({
+  Future<MediaAsset> _afterSave({
     required AssetEntity asset,
-    required AlbumDisplay album,
+    required Album album,
   }) async {
-    if (album is PlaceholderAlbum) {
-      // First save just materialised the system folder; remove the
-      // placeholder so the next list refresh shows the real album.
-      _placeholderNames.remove(album.name);
-    }
-    if (Platform.isIOS || Platform.isMacOS) {
-      // iOS: link the new asset into the target album (only meaningful
-      // for RealAlbum; placeholders don't exist on iOS path).
-      if (album is RealAlbum) {
-        return PhotoManager.editor.copyAssetToPath(
+    // 첫 저장 직후 photo_manager의 같은-프로세스 binder cache는 새로
+    // 만들어진 시스템 폴더(예: Pictures/소주)를 아직 못 볼 수 있다. 여기서
+    // placeholder를 즉시 지우면 그 사이 상위 레이어가 getUserAlbums를 받아
+    // 앨범 목록에서 통째로 사라지는 케이스가 발생한다. placeholder는
+    // getUserAlbums에서 system과 이름이 겹칠 때만 정리하도록 유지.
+    if ((Platform.isIOS || Platform.isMacOS) && album.isSystem) {
+      // iOS: link the new asset into the target album.
+      final source = await _resolvePath(album.name);
+      if (source != null) {
+        final linked = await PhotoManager.editor.copyAssetToPath(
           asset: asset,
-          pathEntity: album.source,
+          pathEntity: source,
         );
+        return PhotoManagerAsset(linked);
       }
     }
-    return asset;
+    return PhotoManagerAsset(asset);
   }
 
   @override
-  Future<List<String>> deleteAssets(List<AssetEntity> assets) {
-    final ids = assets.map((a) => a.id).toList();
-    return PhotoManager.editor.deleteWithIds(ids);
+  Future<List<String>> deleteAssets(List<MediaAsset> assets) async {
+    // photo_manager 호출은 raw AssetEntity ID가 필요. 다른 소스 자산이
+    // 섞여 있을 수 있으니 photoManager 소스만 추려서 처리한다.
+    final pmAssets = assets.whereType<PhotoManagerAsset>().toList();
+    final pmIds = pmAssets.map((a) => a.entity.id).toList();
+    if (pmIds.isEmpty) return const [];
+    final deletedRawIds = await PhotoManager.editor.deleteWithIds(pmIds);
+    final deletedRawSet = deletedRawIds.toSet();
+    return [
+      for (final a in pmAssets)
+        if (deletedRawSet.contains(a.entity.id)) a.storageKey,
+    ];
   }
 }

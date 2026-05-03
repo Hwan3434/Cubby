@@ -2,9 +2,9 @@ import 'dart:io' show exit;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import 'albums/albums_screen.dart';
 import 'theme/cubby_theme.dart';
 import 'theme/cubby_tokens.dart';
 import 'widgets/cubby_mark.dart';
@@ -38,9 +38,7 @@ class _PermissionGateScreenState extends State<PermissionGateScreen> {
     final ok = (photos.isGranted || photos.isLimited) &&
         (videos.isGranted || videos.isLimited);
     if (ok) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const AlbumsScreen()),
-      );
+      context.go('/albums');
       return;
     }
     setState(() => _checking = false);
@@ -67,9 +65,8 @@ class _PermissionGateScreenState extends State<PermissionGateScreen> {
         (p) => results[p]?.isGranted == true || results[p]?.isLimited == true,
       );
       if (photosOk) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const AlbumsScreen()),
-        );
+        if (!mounted) return;
+        context.go('/albums');
         return;
       }
       await _showDeniedAndExit();

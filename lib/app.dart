@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'app_router.dart';
 import 'data/app_preferences.dart';
-import 'ui/permission_gate_screen.dart';
 import 'ui/theme/cubby_theme.dart';
 
 class CubbyApp extends ConsumerWidget {
@@ -11,12 +11,12 @@ class CubbyApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final mode = ref.watch(themeModeProvider);
-    return MaterialApp(
+    return MaterialApp.router(
       title: 'Cubby',
       theme: buildLightTheme(),
       darkTheme: buildDarkTheme(),
       themeMode: mode,
-      home: const PermissionGateScreen(),
+      routerConfig: appRouter,
     );
   }
 }

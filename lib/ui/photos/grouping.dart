@@ -1,20 +1,19 @@
-import 'package:photo_manager/photo_manager.dart';
-
 import '../../data/grouping_unit.dart';
+import '../../data/media_asset.dart';
 
 export '../../data/grouping_unit.dart' show GroupingUnit;
 
 class AssetSection {
   AssetSection({required this.label, required this.items});
   final String label;
-  final List<AssetEntity> items;
+  final List<MediaAsset> items;
 }
 
 /// items는 정렬 상태 그대로(내림차/오름차 무관) 받아 같은 그룹 키를 가진 연속
 /// 자산을 한 섹션으로 묶는다. "오늘"/"어제"는 단위와 무관하게 항상 day 단위
 /// 라벨로 나뉘고, 그 외에만 [unit]이 적용된다.
 List<AssetSection> groupAssets(
-  List<AssetEntity> items,
+  List<MediaAsset> items,
   GroupingUnit unit, {
   DateTime? now,
 }) {
@@ -26,7 +25,7 @@ List<AssetSection> groupAssets(
   final sections = <AssetSection>[];
   String? currentKey;
   String? currentLabel;
-  List<AssetEntity> bucket = [];
+  List<MediaAsset> bucket = [];
 
   void flush() {
     if (bucket.isEmpty) return;
@@ -35,7 +34,7 @@ List<AssetSection> groupAssets(
   }
 
   for (final item in items) {
-    final created = item.createDateTime;
+    final created = item.createdAt;
     final day = DateTime(created.year, created.month, created.day);
     String key;
     String label;

@@ -3,29 +3,32 @@ import 'dart:io' show File, Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:photo_manager/photo_manager.dart';
+import 'package:photo_view/photo_view.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../data/media_asset.dart';
 import '../../data/media_repository.dart';
 import '../../data/photo_cache.dart';
 import '../snackbar.dart';
 import '../theme/cubby_tokens.dart';
+import '../widgets/asset_thumbnail.dart';
+import '../widgets/bordered_thumb.dart';
 
-const ThumbnailSize kGridThumbSize = ThumbnailSize.square(240);
+const int kGridThumbSize = 240;
 
-const ThumbnailSize _kPreviewThumbSize = ThumbnailSize.square(1080);
-const ThumbnailSize _kIndicatorThumbSize = ThumbnailSize.square(160);
+const int _kPreviewThumbSize = 1080;
+const int _kIndicatorThumbSize = 160;
 
 // 디자인: 활성 56px, 비활성 38px. cell extent는 활성 셀이 들어갈 자리.
-const double _kIndicatorCellExtent = 64;
+const double _kIndicatorCellExtent = 48;
 const double _kIndicatorActiveSize = 56;
 const double _kIndicatorInactiveSize = 38;
 const double _kIndicatorStripHeight = 76;
 
 Future<void> openMediaDetail(
   BuildContext context, {
-  required List<AssetEntity> assets,
+  required List<MediaAsset> assets,
   required int initialIndex,
   required String albumId,
   required Map<String, Uint8List> seedThumbs,
@@ -53,7 +56,7 @@ class _MediaDetailPage extends ConsumerStatefulWidget {
     required this.onAssetDeleted,
   });
 
-  final List<AssetEntity> assets;
+  final List<MediaAsset> assets;
   final int initialIndex;
   final String albumId;
   final Map<String, Uint8List> seedThumbs;
@@ -66,7 +69,7 @@ class _MediaDetailPage extends ConsumerStatefulWidget {
 class _MediaDetailPageState extends ConsumerState<_MediaDetailPage> {
   late final PageController _pageController;
   late final ScrollController _stripController;
-  late List<AssetEntity> _assets;
+  late List<MediaAsset> _assets;
   late int _currentIndex;
 
   VideoPlayerController? _activeVideoController;
@@ -149,7 +152,7 @@ class _MediaDetailPageState extends ConsumerState<_MediaDetailPage> {
   Future<void> _share() async {
     final asset = _assets[_currentIndex];
     try {
-      final file = await asset.file;
+      final file = await asset.originFile();
       if (file == null) {
         if (!mounted) return;
         showError(context, '공유 실패: 파일을 찾을 수 없습니다');
@@ -169,7 +172,7 @@ class _MediaDetailPageState extends ConsumerState<_MediaDetailPage> {
       final deletedIds = await repo.deleteAssets([asset]);
       if (!mounted) return;
       if (deletedIds.isEmpty) return; // user cancelled OS dialog
-      widget.onAssetDeleted(asset.id);
+      widget.onAssetDeleted(asset.storageKey);
       _removeCurrentFromPager();
     } catch (e) {
       if (!mounted) return;
@@ -211,35 +214,43 @@ class _MediaDetailPageState extends ConsumerState<_MediaDetailPage> {
         body: Stack(
           children: [
             Positioned.fill(
-              child: PageView.builder(
-                controller: _pageController,
-                itemCount: _assets.length,
-                onPageChanged: _onPageChanged,
-                physics: _zoomed
-                    ? const NeverScrollableScrollPhysics()
-                    : const PageScrollPhysics(),
-                itemBuilder: (_, i) {
-                  final asset = _assets[i];
-                  if (asset.type == AssetType.video) {
-                    return _VideoPage(
-                      key: ValueKey('v_${asset.id}'),
+              // photo_view의 ScaleGestureRecognizer가 두 손가락 감지 시
+              // gesture arena를 즉시 가져갈 수 있도록 axis를 명시. 이게 없으면
+              // 부모 PageView의 HorizontalDragGestureRecognizer가 첫 핀치
+              // 프레임을 가로채서 다음 페이지로 넘어간다 (flutter#68594).
+              child: PhotoViewGestureDetectorScope(
+                axis: Axis.horizontal,
+                child: PageView.builder(
+                  controller: _pageController,
+                  itemCount: _assets.length,
+                  onPageChanged: _onPageChanged,
+                  physics: _zoomed
+                      ? const NeverScrollableScrollPhysics()
+                      : const PageScrollPhysics(),
+                  itemBuilder: (_, i) {
+                    final asset = _assets[i];
+                    if (asset.isVideo) {
+                      return _VideoPage(
+                        key: ValueKey('v_${asset.storageKey}'),
+                        asset: asset,
+                        isActive: i == _currentIndex,
+                        onControllerChanged: i == _currentIndex
+                            ? _onActiveVideoControllerChanged
+                            : null,
+                        onBackgroundTap: _toggleChrome,
+                      );
+                    }
+                    return _PhotoPage(
+                      key: ValueKey('p_${asset.storageKey}'),
                       asset: asset,
-                      isActive: i == _currentIndex,
-                      onControllerChanged: i == _currentIndex
-                          ? _onActiveVideoControllerChanged
-                          : null,
-                      onBackgroundTap: _toggleChrome,
+                      albumId: widget.albumId,
+                      seedBytes: widget.seedThumbs[asset.storageKey],
+                      onZoomChanged:
+                          i == _currentIndex ? _onZoomChanged : null,
+                      onTap: _toggleChrome,
                     );
-                  }
-                  return _PhotoPage(
-                    key: ValueKey('p_${asset.id}'),
-                    asset: asset,
-                    albumId: widget.albumId,
-                    seedBytes: widget.seedThumbs[asset.id],
-                    onZoomChanged: i == _currentIndex ? _onZoomChanged : null,
-                    onTap: _toggleChrome,
-                  );
-                },
+                  },
+                ),
               ),
             ),
             Positioned(
@@ -274,7 +285,7 @@ class _MediaDetailPageState extends ConsumerState<_MediaDetailPage> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       if (_activeVideoController != null &&
-                          currentAsset.type == AssetType.video)
+                          currentAsset.isVideo)
                         _VideoControls(controller: _activeVideoController!),
                       _IndicatorStrip(
                         assets: _assets,
@@ -309,14 +320,14 @@ class _TopChrome extends StatelessWidget {
     required this.total,
   });
 
-  final AssetEntity asset;
+  final MediaAsset asset;
   final int index;
   final int total;
 
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
-    final created = asset.createDateTime;
+    final created = asset.createdAt;
     final dateLabel = _formatDateTime(created);
     return Container(
       padding: EdgeInsets.fromLTRB(
@@ -456,7 +467,7 @@ class _PhotoPage extends ConsumerStatefulWidget {
     required this.onTap,
   });
 
-  final AssetEntity asset;
+  final MediaAsset asset;
   final String albumId;
   final Uint8List? seedBytes;
   final ValueChanged<bool>? onZoomChanged;
@@ -472,12 +483,15 @@ class _PhotoPageState extends ConsumerState<_PhotoPage> {
   Uint8List? _previewBytes;
   File? _file;
 
-  final _viewer = TransformationController();
+  // PhotoView가 내부 ScaleGestureRecognizer를 PageView보다 먼저 win하도록
+  // arena를 처리해 줘서 InteractiveViewer + physics 토글의 race condition을
+  // 우회한다. controller는 scale 변화 감지에만 사용.
+  final _photoController = PhotoViewController();
 
   @override
   void initState() {
     super.initState();
-    _viewer.addListener(_onViewerChanged);
+    _photoController.outputStateStream.listen(_onPhotoState);
     _hydrateFromCache();
     if (Platform.isIOS) {
       if (_previewBytes == null) _loadIosOriginalAsBytes();
@@ -489,51 +503,53 @@ class _PhotoPageState extends ConsumerState<_PhotoPage> {
 
   @override
   void dispose() {
-    _viewer.removeListener(_onViewerChanged);
-    _viewer.dispose();
+    _photoController.dispose();
     super.dispose();
   }
 
   void _hydrateFromCache() {
     final cache = ref.read(photoCacheProvider(widget.albumId));
-    final entry = cache[widget.asset.id];
+    final entry = cache[widget.asset.storageKey];
     if (entry == null) return;
     _previewBytes = entry.previewBytes;
     _file = entry.file;
   }
 
   Future<void> _loadPreview() async {
-    final bytes = await widget.asset.thumbnailDataWithSize(_kPreviewThumbSize);
+    final bytes = await widget.asset.thumbnail(size: _kPreviewThumbSize);
     if (!mounted || bytes == null) return;
     ref
         .read(photoCacheProvider(widget.albumId).notifier)
-        .update(widget.asset.id, previewBytes: bytes);
+        .update(widget.asset.storageKey, previewBytes: bytes);
     setState(() => _previewBytes = bytes);
   }
 
   Future<void> _loadFile() async {
-    final file = await widget.asset.file;
+    final file = await widget.asset.originFile();
     if (!mounted || file == null) return;
     ref
         .read(photoCacheProvider(widget.albumId).notifier)
-        .update(widget.asset.id, file: file);
+        .update(widget.asset.storageKey, file: file);
     setState(() => _file = file);
   }
 
   Future<void> _loadIosOriginalAsBytes() async {
-    // iOS는 HEIC 직접 디코딩 회피 — 원본 사이즈 thumbnail로 대체.
-    final size = ThumbnailSize(widget.asset.width, widget.asset.height);
-    final bytes = await widget.asset.thumbnailDataWithSize(size);
+    // iOS HEIC는 직접 디코딩 불가. 원본 사이즈 thumbnail을 호출해 JPEG로
+    // 받아 _previewBytes로 사용.
+    final longSide = widget.asset.width > widget.asset.height
+        ? widget.asset.width
+        : widget.asset.height;
+    final bytes = await widget.asset.thumbnail(size: longSide);
     if (!mounted || bytes == null) return;
     ref
         .read(photoCacheProvider(widget.albumId).notifier)
-        .update(widget.asset.id, previewBytes: bytes);
+        .update(widget.asset.storageKey, previewBytes: bytes);
     setState(() => _previewBytes = bytes);
   }
 
-  void _onViewerChanged() {
+  void _onPhotoState(PhotoViewControllerValue value) {
     // 부모(_MediaDetailPage._onZoomChanged)에 == 가드가 있어 같은 값은 무시된다.
-    final zoomed = _viewer.value.row0.x > 1.001;
+    final zoomed = (value.scale ?? 1.0) > 1.001;
     widget.onZoomChanged?.call(zoomed);
   }
 
@@ -542,13 +558,14 @@ class _PhotoPageState extends ConsumerState<_PhotoPage> {
     return GestureDetector(
       onTap: widget.onTap,
       behavior: HitTestBehavior.opaque,
-      child: InteractiveViewer(
-        transformationController: _viewer,
-        minScale: 1.0,
-        maxScale: 4.0,
-        child: SizedBox.expand(
-          child: Center(child: _buildImage()),
-        ),
+      child: PhotoView.customChild(
+        controller: _photoController,
+        backgroundDecoration: const BoxDecoration(color: Colors.black),
+        minScale: PhotoViewComputedScale.contained,
+        maxScale: PhotoViewComputedScale.contained * 4,
+        initialScale: PhotoViewComputedScale.contained,
+        basePosition: Alignment.center,
+        child: _buildImage(),
       ),
     );
   }
@@ -588,7 +605,7 @@ class _VideoPage extends StatefulWidget {
     required this.onBackgroundTap,
   });
 
-  final AssetEntity asset;
+  final MediaAsset asset;
   final bool isActive;
   final ValueChanged<VideoPlayerController?>? onControllerChanged;
   final VoidCallback onBackgroundTap;
@@ -625,7 +642,7 @@ class _VideoPageState extends State<_VideoPage> {
 
   Future<void> _setup() async {
     _setupStarted = true;
-    final file = await widget.asset.file;
+    final file = await widget.asset.originFile();
     if (!mounted || file == null) return;
     final controller = VideoPlayerController.file(file);
     await controller.initialize();
@@ -649,24 +666,28 @@ class _VideoPageState extends State<_VideoPage> {
   Widget build(BuildContext context) {
     final controller = _controller;
     final ready = controller != null && controller.value.isInitialized;
-    return GestureDetector(
-      onTap: widget.onBackgroundTap,
-      behavior: HitTestBehavior.opaque,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          if (!ready)
-            const Center(
-              child: CircularProgressIndicator(color: Colors.white),
-            ),
-          if (ready)
-            Center(
-              child: AspectRatio(
-                aspectRatio: controller.value.aspectRatio,
-                child: VideoPlayer(controller),
-              ),
-            ),
-        ],
+    if (!ready) {
+      return GestureDetector(
+        onTap: widget.onBackgroundTap,
+        behavior: HitTestBehavior.opaque,
+        child: const Center(
+          child: CircularProgressIndicator(color: Colors.white),
+        ),
+      );
+    }
+    // 사진과 동일한 PhotoView 패턴으로 핀치 줌 + chrome 토글.
+    // VideoPlayer는 Texture 위젯이라 PhotoView의 transform이 native layer에
+    // 그대로 적용된다. controller가 chrome 토글을 그대로 받도록 onTapUp 사용.
+    return PhotoView.customChild(
+      backgroundDecoration: const BoxDecoration(color: Colors.black),
+      minScale: PhotoViewComputedScale.contained,
+      maxScale: PhotoViewComputedScale.contained * 4,
+      initialScale: PhotoViewComputedScale.contained,
+      basePosition: Alignment.center,
+      onTapUp: (_, __, ___) => widget.onBackgroundTap(),
+      child: AspectRatio(
+        aspectRatio: controller.value.aspectRatio,
+        child: VideoPlayer(controller),
       ),
     );
   }
@@ -745,7 +766,7 @@ class _IndicatorStrip extends StatelessWidget {
     required this.onTap,
   });
 
-  final List<AssetEntity> assets;
+  final List<MediaAsset> assets;
   final int currentIndex;
   final Map<String, Uint8List> seedThumbs;
   final ScrollController stripController;
@@ -768,28 +789,42 @@ class _IndicatorStrip extends StatelessWidget {
           final selected = i == currentIndex;
           final size =
               selected ? _kIndicatorActiveSize : _kIndicatorInactiveSize;
+          final borderWidth = selected ? 2.0 : 1.0;
           return GestureDetector(
             onTap: () => onTap(i),
             behavior: HitTestBehavior.opaque,
             child: Center(
-              child: AnimatedContainer(
+              child: AnimatedSize(
                 duration: CubbyMotion.immersive,
                 curve: CubbyMotion.immersiveCurve,
-                width: size,
-                height: size,
-                decoration: BoxDecoration(
-                  borderRadius: const BorderRadius.all(Radius.circular(8)),
-                  border: Border.all(
-                    color: selected
-                        ? Colors.white
-                        : Colors.white.withValues(alpha: 0.4),
-                    width: selected ? 2 : 1,
+                child: BorderedThumb(
+                  size: size,
+                  outerRadius: 8,
+                  borderWidth: borderWidth,
+                  borderColor: selected
+                      ? Colors.white
+                      : Colors.white.withValues(alpha: 0.4),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      AssetThumbnail(
+                        asset: asset,
+                        size: _kIndicatorThumbSize,
+                        seedBytes: seedThumbs[asset.storageKey],
+                        placeholder: Container(color: Colors.grey.shade800),
+                      ),
+                      if (asset.isVideo)
+                        const Positioned(
+                          top: 2,
+                          right: 2,
+                          child: Icon(
+                            Icons.videocam,
+                            color: Colors.white,
+                            size: 12,
+                          ),
+                        ),
+                    ],
                   ),
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: _IndicatorThumb(
-                  asset: asset,
-                  seed: seedThumbs[asset.id],
                 ),
               ),
             ),
@@ -800,50 +835,3 @@ class _IndicatorStrip extends StatelessWidget {
   }
 }
 
-class _IndicatorThumb extends StatefulWidget {
-  const _IndicatorThumb({required this.asset, required this.seed});
-
-  final AssetEntity asset;
-  final Uint8List? seed;
-
-  @override
-  State<_IndicatorThumb> createState() => _IndicatorThumbState();
-}
-
-class _IndicatorThumbState extends State<_IndicatorThumb> {
-  Uint8List? _bytes;
-
-  @override
-  void initState() {
-    super.initState();
-    _bytes = widget.seed;
-    if (_bytes == null) _fetch();
-  }
-
-  Future<void> _fetch() async {
-    final bytes =
-        await widget.asset.thumbnailDataWithSize(_kIndicatorThumbSize);
-    if (!mounted || bytes == null) return;
-    setState(() => _bytes = bytes);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bytes = _bytes;
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        if (bytes == null)
-          Container(color: Colors.grey.shade800)
-        else
-          Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true),
-        if (widget.asset.type == AssetType.video)
-          const Positioned(
-            top: 2,
-            right: 2,
-            child: Icon(Icons.videocam, color: Colors.white, size: 12),
-          ),
-      ],
-    );
-  }
-}

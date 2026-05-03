@@ -2,46 +2,63 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:photo_manager/photo_manager.dart';
+import 'package:go_router/go_router.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../app_router.dart';
+import '../../data/album.dart';
+import '../../data/album_live.dart';
 import '../../data/app_preferences.dart';
+import '../../data/media_asset.dart';
 import '../../data/media_repository.dart';
-import '../camera/camera_screen.dart';
 import '../snackbar.dart';
+import '../widgets/asset_thumbnail.dart';
 import '../theme/cubby_theme.dart';
 import '../theme/cubby_tokens.dart';
 import 'grouping.dart';
 import 'media_detail_route.dart';
 
 class PhotosScreen extends ConsumerStatefulWidget {
-  const PhotosScreen({super.key, required this.album});
+  const PhotosScreen({
+    super.key,
+    required this.albumName,
+    this.album,
+    this.shootImmediately = false,
+  });
 
-  final AlbumDisplay album;
+  /// 라우트의 진실 (`/albums/:name`).
+  final String albumName;
+
+  /// 라우트 extra로 전달된 [Album] 힌트. 없으면 화면이 직접 lookup.
+  /// placeholder 분기용으로 들고 있다.
+  final Album? album;
+
+  /// 라우트 진입 직후 자동으로 카메라 push.
+  /// "새 앨범 만들기 + 즉시 촬영" 흐름에서 albums가 PhotosScreen을 push하면서
+  /// 켜둔다. PhotosScreen은 마운트 직후 카메라를 push하므로 stack은
+  /// albums → photos(name) → camera(name) 가 자연스럽게 만들어진다.
+  final bool shootImmediately;
 
   @override
   ConsumerState<PhotosScreen> createState() => _PhotosScreenState();
 }
 
 class _PhotosScreenState extends ConsumerState<PhotosScreen> {
-  static const _pageSize = 80;
   static const _selectionLimit = 20;
 
-  late AlbumDisplay _album = widget.album;
-
-  final List<AssetEntity> _items = [];
+  // 자산 리스트와 페이지네이션은 albumLiveProvider가 소유. 여기는 UI 한정
+  // 상태만 — 다중 선택, 정렬, 그룹 단위, 카메라에서 강조할 fresh ID, 그리드
+  // 썸네일 캐시.
   final Set<String> _selected = {};
   final Map<String, Uint8List> _thumbBytes = {};
+  final Set<String> _freshIds = {};
   bool _selectionMode = false;
-  bool _hasMore = true;
-  bool _loading = false;
-  int _nextPage = 0;
   bool _started = false;
 
-  // 정렬은 세션 한정 (화면 떠나면 desc로 초기화).
   bool _ascending = false;
-  // 그룹 단위는 글로벌 + 영속. AppPreferences에서 로드.
   GroupingUnit _grouping = GroupingUnit.day;
+
+  String get _albumName => widget.albumName;
 
   @override
   void didChangeDependencies() {
@@ -49,7 +66,14 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     if (!_started) {
       _started = true;
       _loadGrouping();
-      _loadMore();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ref.read(albumLiveProvider(_albumName).notifier).loadMore();
+        // "새 앨범 + 즉시 촬영" 흐름: 마운트 직후 카메라를 push해 stack을
+        // albums → photos → camera 로 자연스럽게 만든다. 카메라에서 뒤로
+        // 가면 PhotosScreen이 그대로 보여 공유 팝업/방금 강조도 정상 동작.
+        if (widget.shootImmediately) _openCamera();
+      });
     }
   }
 
@@ -61,96 +85,78 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     });
   }
 
-  bool get _isPlaceholder => _album is PlaceholderAlbum;
-
-  Future<void> _loadMore() async {
-    if (_loading || !_hasMore) return;
-    if (_isPlaceholder) {
-      setState(() => _hasMore = false);
-      return;
-    }
-    setState(() => _loading = true);
-    try {
-      final page = await ref.read(mediaRepositoryProvider).getAssets(
-            _album,
-            page: _nextPage,
-            pageSize: _pageSize,
-          );
-      if (!mounted) return;
-      setState(() {
-        _items.addAll(page);
-        // photo_manager가 사진과 영상을 따로 모아 페이지로 주는 것으로
-        // 보여, 시각적으로 type별 그룹이 분리된다. type 무관 촬영일 desc로
-        // 정렬해 같은 날짜 라벨 안에 사진과 영상이 함께 보이게 한다.
-        _items.sort((a, b) => b.createDateTime.compareTo(a.createDateTime));
-        _nextPage++;
-        _hasMore = page.length == _pageSize;
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-      showError(context, '사진을 불러오지 못했습니다: $e');
-    }
+  void _loadMore() {
+    ref.read(albumLiveProvider(_albumName).notifier).loadMore();
   }
 
-  Future<void> _refresh() async {
-    setState(() {
-      _items.clear();
-      _selected.clear();
-      _thumbBytes.clear();
-      _nextPage = 0;
-      _hasMore = true;
-    });
-    await _loadMore();
-  }
-
-  Future<void> _promoteIfPlaceholder() async {
-    if (!_isPlaceholder) return;
-    final albums = await ref.read(mediaRepositoryProvider).getUserAlbums();
-    if (!mounted) return;
-    final promoted = albums.whereType<RealAlbum>().where(
-          (a) => a.name == _album.name,
-        );
-    if (promoted.isNotEmpty) {
-      setState(() => _album = promoted.first);
-    }
-  }
-
-  void _openDetail(int index, List<AssetEntity> ordered) {
+  void _openDetail(int index, List<MediaAsset> ordered) {
     openMediaDetail(
       context,
       assets: List.unmodifiable(ordered),
       initialIndex: index,
-      albumId: _album.name,
+      albumId: _albumName,
       seedThumbs: Map.unmodifiable(_thumbBytes),
       onAssetDeleted: (assetId) {
         if (!mounted) return;
+        ref
+            .read(albumLiveProvider(_albumName).notifier)
+            .removeAssets([assetId]);
         setState(() {
-          _items.removeWhere((a) => a.id == assetId);
           _selected.remove(assetId);
           _thumbBytes.remove(assetId);
+          _freshIds.remove(assetId);
         });
       },
     );
   }
 
   Future<void> _openCamera() async {
-    final saved = await Navigator.push<AssetEntity>(
-      context,
-      MaterialPageRoute(builder: (_) => CameraScreen(album: _album)),
+    final savedIds = await context.push<List<String>>(
+      AppRoutes.camera(_albumName),
+      extra: widget.album,
     );
-    if (!mounted || saved == null) return;
-    await _promoteIfPlaceholder();
-    if (!mounted) return;
-    await _refresh();
+    if (!mounted || savedIds == null || savedIds.isEmpty) return;
+    setState(() => _freshIds.addAll(savedIds));
+    await _maybeOfferShare(savedIds);
   }
 
-  Future<void> _shareSelected() async {
-    final assets = _items.where((a) => _selected.contains(a.id)).toList();
+  Future<void> _maybeOfferShare(List<String> ids) async {
+    final shouldShare = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('공유할까요?'),
+        content: Text(
+          ids.length == 1
+              ? '방금 찍은 항목을 다른 앱으로 공유하시겠어요?'
+              : '방금 찍은 ${ids.length}개를 다른 앱으로 공유하시겠어요?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('아니요'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('공유'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || shouldShare != true) return;
+    await _shareByKeys(ids);
+  }
+
+  Future<void> _shareSelected() => _shareByKeys(_selected);
+
+  Future<void> _shareByKeys(Iterable<String> storageKeys) async {
+    final keys = storageKeys.toSet();
+    if (keys.isEmpty) return;
+    final items = ref.read(albumLiveProvider(_albumName)).items;
+    final assets =
+        items.where((a) => keys.contains(a.storageKey)).toList();
     if (assets.isEmpty) return;
     try {
-      final files = await Future.wait(assets.map((a) => a.file));
+      final files = await Future.wait(assets.map((a) => a.originFile()));
       final xfiles = [
         for (final f in files)
           if (f != null) XFile(f.path),
@@ -169,14 +175,17 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
 
   Future<void> _deleteSelected() async {
     final repo = ref.read(mediaRepositoryProvider);
-    final assets = _items.where((a) => _selected.contains(a.id)).toList();
+    final items = ref.read(albumLiveProvider(_albumName)).items;
+    final assets = items.where((a) => _selected.contains(a.storageKey)).toList();
     if (assets.isEmpty) return;
     try {
       final deletedIds = await repo.deleteAssets(assets);
       if (!mounted) return;
       if (deletedIds.isEmpty) return;
+      ref
+          .read(albumLiveProvider(_albumName).notifier)
+          .removeAssets(deletedIds);
       setState(() {
-        _items.removeWhere((a) => deletedIds.contains(a.id));
         _selected.clear();
         _selectionMode = false;
       });
@@ -198,9 +207,9 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     });
   }
 
-  void _toggleSelect(AssetEntity a) {
-    if (_selected.contains(a.id)) {
-      setState(() => _selected.remove(a.id));
+  void _toggleSelect(MediaAsset a) {
+    if (_selected.contains(a.storageKey)) {
+      setState(() => _selected.remove(a.storageKey));
       return;
     }
     if (_selected.length >= _selectionLimit) {
@@ -209,7 +218,7 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     }
     setState(() {
       _selectionMode = true;
-      _selected.add(a.id);
+      _selected.add(a.storageKey);
     });
   }
 
@@ -252,7 +261,12 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final ordered = _orderedItems();
+    final assetsState = ref.watch(albumLiveProvider(_albumName));
+    final items = assetsState.items;
+    final loading = assetsState.loading;
+    final isPlaceholder =
+        (widget.album?.isPlaceholder ?? false) && items.isEmpty;
+    final ordered = _orderItems(items);
     final sections = groupAssets(ordered, _grouping);
 
     return Scaffold(
@@ -262,19 +276,19 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
         child: Column(
           children: [
             _DetailAppBar(
-              album: _album,
-              itemCount: _items.length,
+              albumName: _albumName,
+              itemCount: items.length,
               selectionMode: _selectionMode,
               selectedCount: _selected.length,
               selectionLimit: _selectionLimit,
               ascending: _ascending,
               groupingUnit: _grouping,
               groupingIcon: _groupingIcon(_grouping),
-              onBack: () => Navigator.pop(context),
-              onEnterSelection: _items.isEmpty ? null : _enterSelectionMode,
+              onBack: () => context.pop(),
+              onEnterSelection: items.isEmpty ? null : _enterSelectionMode,
               onExitSelection: _exitSelectionMode,
-              onToggleSort: _items.isEmpty ? null : _toggleSort,
-              onCycleGrouping: _items.isEmpty ? null : _cycleGrouping,
+              onToggleSort: items.isEmpty ? null : _toggleSort,
+              onCycleGrouping: items.isEmpty ? null : _cycleGrouping,
             ),
             Expanded(
               child: NotificationListener<ScrollNotification>(
@@ -284,8 +298,8 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
                   }
                   return false;
                 },
-                child: _items.isEmpty && !_loading
-                    ? _EmptyState(isPlaceholder: _isPlaceholder)
+                child: items.isEmpty && !loading
+                    ? _EmptyState(isPlaceholder: isPlaceholder)
                     : CustomScrollView(
                         slivers: [
                           for (final section in sections) ...[
@@ -314,7 +328,7 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
                           SliverToBoxAdapter(
                             child: SizedBox(
                               height: _selectionMode ? 96 : 110,
-                              child: _loading
+                              child: loading
                                   ? const Center(
                                       child: CircularProgressIndicator(),
                                     )
@@ -356,14 +370,14 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     );
   }
 
-  // _items는 _loadMore에서 desc로 정렬돼 들어온다. asc 토글이면 reverse.
-  List<AssetEntity> _orderedItems() {
-    if (_ascending) return _items.reversed.toList(growable: false);
-    return _items;
+  // provider items는 desc 정렬 보장. asc 토글이면 reverse.
+  List<MediaAsset> _orderItems(List<MediaAsset> items) {
+    if (_ascending) return items.reversed.toList(growable: false);
+    return items;
   }
 
-  Widget _buildCell(AssetEntity asset, List<AssetEntity> ordered) {
-    final selected = _selected.contains(asset.id);
+  Widget _buildCell(MediaAsset asset, List<MediaAsset> ordered) {
+    final selected = _selected.contains(asset.storageKey);
     return GestureDetector(
       onLongPress: () => _toggleSelect(asset),
       onTap: () {
@@ -378,7 +392,8 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
         asset: asset,
         selected: selected,
         multiSelect: _selectionMode,
-        cachedBytes: _thumbBytes[asset.id],
+        fresh: _freshIds.contains(asset.storageKey),
+        cachedBytes: _thumbBytes[asset.storageKey],
         onBytesLoaded: (id, bytes) {
           _thumbBytes[id] = bytes;
         },
@@ -389,7 +404,7 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
 
 class _DetailAppBar extends StatelessWidget {
   const _DetailAppBar({
-    required this.album,
+    required this.albumName,
     required this.itemCount,
     required this.selectionMode,
     required this.selectedCount,
@@ -404,7 +419,7 @@ class _DetailAppBar extends StatelessWidget {
     required this.onCycleGrouping,
   });
 
-  final AlbumDisplay album;
+  final String albumName;
   final int itemCount;
   final bool selectionMode;
   final int selectedCount;
@@ -438,7 +453,7 @@ class _DetailAppBar extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  selectionMode ? '$selectedCount개 선택됨' : album.name,
+                  selectionMode ? '$selectedCount개 선택됨' : albumName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: CubbyType.titleMd.copyWith(color: scheme.onSurface),
@@ -571,76 +586,51 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _GridCell extends StatefulWidget {
+class _GridCell extends StatelessWidget {
   const _GridCell({
     required this.asset,
     required this.selected,
     required this.multiSelect,
+    required this.fresh,
     required this.cachedBytes,
     required this.onBytesLoaded,
   });
 
-  final AssetEntity asset;
+  final MediaAsset asset;
   final bool selected;
   final bool multiSelect;
+  final bool fresh;
   final Uint8List? cachedBytes;
-  final void Function(String assetId, Uint8List bytes) onBytesLoaded;
-
-  @override
-  State<_GridCell> createState() => _GridCellState();
-}
-
-class _GridCellState extends State<_GridCell> {
-  Uint8List? _bytes;
-
-  @override
-  void initState() {
-    super.initState();
-    _bytes = widget.cachedBytes;
-    if (_bytes == null) _fetch();
-  }
-
-  @override
-  void didUpdateWidget(_GridCell old) {
-    super.didUpdateWidget(old);
-    if (old.asset.id != widget.asset.id) {
-      _bytes = widget.cachedBytes;
-      if (_bytes == null) _fetch();
-    }
-  }
-
-  Future<void> _fetch() async {
-    final bytes = await widget.asset.thumbnailDataWithSize(kGridThumbSize);
-    if (!mounted || bytes == null) return;
-    widget.onBytesLoaded(widget.asset.id, bytes);
-    setState(() => _bytes = bytes);
-  }
+  final void Function(String storageKey, Uint8List bytes) onBytesLoaded;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final cubby = context.cubby;
-    final bytes = _bytes;
-    final isVideo = widget.asset.type == AssetType.video;
+    final isVideo = asset.isVideo;
     return Stack(
       fit: StackFit.expand,
       children: [
-        bytes == null
-            ? Container(color: cubby.surfaceCard)
-            : Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true),
-        if (isVideo && !widget.multiSelect)
+        AssetThumbnail(
+          asset: asset,
+          size: kGridThumbSize,
+          seedBytes: cachedBytes,
+          onBytesLoaded: onBytesLoaded,
+          placeholder: Container(color: cubby.surfaceCard),
+        ),
+        if (isVideo && !multiSelect)
           Positioned(
             left: 6,
             bottom: 6,
-            child: _VideoDurationPill(duration: widget.asset.videoDuration),
+            child: _VideoDurationPill(duration: asset.duration),
           ),
-        if (widget.multiSelect)
+        if (multiSelect)
           Positioned(
             top: 8,
             right: 8,
-            child: _RadioBubble(filled: widget.selected, color: scheme.primary),
+            child: _RadioBubble(filled: selected, color: scheme.primary),
           ),
-        if (widget.multiSelect && widget.selected)
+        if (multiSelect && selected)
           IgnorePointer(
             child: Container(
               decoration: BoxDecoration(
@@ -649,6 +639,39 @@ class _GridCellState extends State<_GridCell> {
               ),
             ),
           ),
+        if (fresh && !multiSelect) ...[
+          IgnorePointer(
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: scheme.primary, width: 3),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 6,
+            left: 6,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 3,
+              ),
+              decoration: BoxDecoration(
+                color: scheme.primary,
+                borderRadius:
+                    const BorderRadius.all(Radius.circular(9999)),
+              ),
+              child: const Text(
+                '방금',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.6,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -779,7 +802,10 @@ class _MultiSelectActionBar extends StatelessWidget {
               label: const Text('삭제'),
               style: FilledButton.styleFrom(
                 minimumSize: const Size(0, 44),
-                backgroundColor: scheme.error,
+                // 삭제 버튼은 light/dark 모두 동일 진빨강 + 흰 텍스트로 고정.
+                // ColorScheme.error는 dark에서 light pink로 매핑되어 흰
+                // 텍스트와 대비가 깨지기 때문에 brand 의도에 맞춰 직접 지정.
+                backgroundColor: const Color(0xFFC64545),
                 foregroundColor: Colors.white,
                 shape: const RoundedRectangleBorder(
                   borderRadius: CubbyRadius.mdAll,

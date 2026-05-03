@@ -5,12 +5,17 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:photo_manager/photo_manager.dart';
+import 'package:go_router/go_router.dart';
 
+import '../../data/album.dart';
+import '../../data/album_live.dart';
+import '../../data/albums_catalog.dart';
+import '../../data/media_asset.dart';
 import '../../data/media_repository.dart';
 import '../photos/media_detail_route.dart';
 import '../snackbar.dart';
 import '../theme/cubby_tokens.dart';
+import '../widgets/bordered_thumb.dart';
 
 enum _Mode { photo, video }
 
@@ -40,15 +45,24 @@ extension on _Flash {
 }
 
 class CameraScreen extends ConsumerStatefulWidget {
-  const CameraScreen({super.key, required this.album});
+  const CameraScreen({
+    super.key,
+    required this.albumName,
+    this.album,
+  });
 
-  final AlbumDisplay album;
+  /// 라우트의 진실 (`/albums/:name/camera`).
+  final String albumName;
+
+  /// 라우트 extra로 전달된 Album 힌트. 없으면 화면이 직접 lookup.
+  final Album? album;
 
   @override
   ConsumerState<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends ConsumerState<CameraScreen> {
+class _CameraScreenState extends ConsumerState<CameraScreen>
+    with TickerProviderStateMixin {
   CameraController? _controller;
   String? _error;
   _Mode _mode = _Mode.photo;
@@ -62,11 +76,24 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
   int _cameraIndex = 0;
   _Flash _flash = _Flash.off;
 
-  // 좌하단 "최근 촬영" 썸네일. 카메라 진입 시 album의 가장 최근 자산 1장을
-  // 가져와 표시한다. 첫 촬영이 끝난 뒤에는 닫히고 PhotosScreen에 새로고침된
-  // 결과가 보이므로, 카메라 세션 동안 갱신은 하지 않는다.
-  AssetEntity? _recentAsset;
+  // 좌하단 "최근 촬영" 썸네일 bytes. provider state는 자산만 제공하고
+  // thumbnail은 여기서 한 번 fetch해 캐시한다 (provider 첫 자산이 바뀔 때마다
+  // 다시 fetch).
+  String? _recentAssetId;
   Uint8List? _recentBytes;
+
+  // 이번 카메라 세션에서 저장에 성공한 자산 ID. close 시점에 PhotosScreen으로
+  // 반환되어 "방금 찍은" 강조 표시에 사용. provider.addAsset로 이미 그리드에는
+  // 동기화됐다.
+  final List<String> _savedAssetIds = [];
+  // 영상 녹화 중 빨간 사각형 heartbeat (750ms 1.0↔0.92 반복).
+  AnimationController? _recordPulse;
+  // 영상 모양 전환: 0=흰 원, 1=빨간 사각형. 셔터 누르면 forward/reverse.
+  AnimationController? _recordMorph;
+  // 사진 셔터: 흰 원이 1.0→0→1.0 (250ms 비대칭).
+  AnimationController? _shutterPulse;
+  // 사진 촬영 시 화면 전체 위 흰색 flash bleach (100ms 0→1→0).
+  AnimationController? _flashFlash;
 
   // 핀치 줌 상태. _zoomMin/_zoomMax는 디바이스 한계, _zoomLevel은 현재 적용값.
   // _zoomBaseline은 onScaleStart 시점의 _zoomLevel을 보관해 update에서
@@ -86,12 +113,53 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
   @override
   void initState() {
     super.initState();
+    _shutterPulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 250),
+    );
+    _flashFlash = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 100),
+    );
+    _recordPulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 750),
+    );
+    _recordMorph = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 250),
+    );
     _setup();
   }
 
+  /// 저장 직전 album을 lookup. catalog에 이미 있으면 그쪽 사용해
+  /// photo_manager round-trip을 피하고, cold start면 repository에 직접 묻는다.
+  /// 어디서도 못 찾으면 placeholder를 만들어 saveImage가 mediaRoot/<name>/
+  /// 경로를 새로 materialise하게 한다.
+  Future<Album> _ensureAlbum() async {
+    for (final a in ref.read(albumsCatalogProvider).albums) {
+      if (a.name == widget.albumName) return a;
+    }
+    final albums = await ref.read(mediaRepositoryProvider).getUserAlbums();
+    for (final a in albums) {
+      if (a.name == widget.albumName) return a;
+    }
+    return Album(
+      name: widget.albumName,
+      origin: AlbumOrigin.placeholder,
+      storedCount: 0,
+    );
+  }
+
   Future<void> _setup() async {
-    // 카메라 초기화와 최근 자산 fetch는 독립이라 병렬로.
-    unawaited(_loadRecentAsset());
+    // PhotosScreen이 이미 watch 중이면 첫 페이지 로드가 끝났을 가능성이
+    // 크지만, 카메라가 다른 경로로 진입했거나 PhotosScreen이 로드 중인
+    // 케이스를 대비해 loadMore를 한 번 트리거. provider가 같은 family라
+    // PhotosScreen state를 깨뜨리지 않는다.
+    Future.microtask(() {
+      if (!mounted) return;
+      ref.read(albumLiveProvider(widget.albumName).notifier).loadMore();
+    });
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -111,44 +179,45 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
     }
   }
 
-  Future<void> _loadRecentAsset() async {
-    try {
-      final repo = ref.read(mediaRepositoryProvider);
-      final list = await repo.getAssets(widget.album, page: 0, pageSize: 1);
-      if (!mounted || list.isEmpty) return;
-      final asset = list.first;
-      final bytes = await asset.thumbnailDataWithSize(
-        const ThumbnailSize.square(160),
-      );
-      if (!mounted) return;
-      setState(() {
-        _recentAsset = asset;
-        _recentBytes = bytes;
-      });
-    } catch (_) {
-      // 썸네일 실패는 silently 무시 (placeholder 모양 유지).
-    }
+  Future<void> _onSavedAsset(MediaAsset asset) async {
+    _savedAssetIds.add(asset.storageKey);
+    // addAsset이 [albumLiveProvider]에 즉시 반영하고 그 안에서 catalog를
+    // invalidate하므로 placeholder→system promote는 자연스럽게 반영된다.
+    // 카메라 좌하단 썸네일은 build에서 provider.items.first를 watch하니
+    // 새 자산이 떨어지면 자동으로 _ensureRecentBytes가 발사된다.
+    ref.read(albumLiveProvider(widget.albumName).notifier).addAsset(asset);
   }
 
-  Future<void> _openRecent() async {
-    final asset = _recentAsset;
-    if (asset == null) return;
+  Future<void> _openRecent(MediaAsset recent, List<MediaAsset> all) async {
+    final initialIndex =
+        all.indexWhere((a) => a.storageKey == recent.storageKey);
     await openMediaDetail(
       context,
-      assets: [asset],
-      initialIndex: 0,
-      albumId: widget.album.name,
-      seedThumbs: _recentBytes != null ? {asset.id: _recentBytes!} : const {},
+      assets: List.unmodifiable(all),
+      initialIndex: initialIndex < 0 ? 0 : initialIndex,
+      albumId: widget.albumName,
+      seedThumbs: _recentBytes != null && _recentAssetId == recent.id
+          ? {recent.id: _recentBytes!}
+          : const {},
       onAssetDeleted: (id) {
         if (!mounted) return;
-        setState(() {
-          if (_recentAsset?.id == id) {
-            _recentAsset = null;
-            _recentBytes = null;
-          }
-        });
+        ref.read(albumLiveProvider(widget.albumName).notifier).removeAssets([id]);
       },
     );
+  }
+
+  /// 좌하단 표시할 가장 최근 자산의 썸네일을 fetch한다. 같은 ID면 skip.
+  void _ensureRecentBytes(MediaAsset asset) {
+    final key = asset.storageKey;
+    if (_recentAssetId == key) return;
+    _recentAssetId = key;
+    () async {
+      try {
+        final bytes = await asset.thumbnail(size: 160);
+        if (!mounted || _recentAssetId != key) return;
+        setState(() => _recentBytes = bytes);
+      } catch (_) {}
+    }();
   }
 
   Future<void> _bindCamera(CameraDescription cam) async {
@@ -281,26 +350,38 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
   void dispose() {
     _recordingTicker?.cancel();
     _zoomHideTicker?.cancel();
-    _controller?.dispose();
+    _shutterPulse?.dispose();
+    _flashFlash?.dispose();
+    _recordPulse?.dispose();
+    _recordMorph?.dispose();
+    final c = _controller;
+    _controller = null;
+    c?.dispose();
     super.dispose();
   }
 
   Future<void> _capturePhoto() async {
     final controller = _controller;
     if (controller == null || _busy) return;
+    _shutterPulse?.forward(from: 0);
+    _flashFlash?.forward(from: 0);
     setState(() => _busy = true);
     try {
       final xfile = await controller.takePicture();
       final bytes = await xfile.readAsBytes();
       if (!mounted) return;
       final repo = ref.read(mediaRepositoryProvider);
+      final album = await _ensureAlbum();
+      if (!mounted) return;
       final asset = await repo.saveImage(
         bytes: bytes,
         filename: 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg',
-        album: widget.album,
+        album: album,
       );
       if (!mounted) return;
-      Navigator.pop(context, asset);
+      await _onSavedAsset(asset);
+      if (!mounted) return;
+      setState(() => _busy = false);
     } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
@@ -321,6 +402,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
           _recordingStartedAt = DateTime.now();
           _recordedFor = Duration.zero;
         });
+        _recordMorph?.forward();
+        _recordPulse?.repeat(reverse: true);
         _recordingTicker = Timer.periodic(
           const Duration(milliseconds: 250),
           (_) {
@@ -338,17 +421,27 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
 
     setState(() => _busy = true);
     _recordingTicker?.cancel();
+    _recordPulse?.stop();
+    _recordPulse?.reset();
+    _recordMorph?.reverse();
     try {
       final xfile = await controller.stopVideoRecording();
       if (!mounted) return;
       final repo = ref.read(mediaRepositoryProvider);
+      final album = await _ensureAlbum();
+      if (!mounted) return;
       final asset = await repo.saveVideo(
         file: File(xfile.path),
         filename: 'VID_${DateTime.now().millisecondsSinceEpoch}.mp4',
-        album: widget.album,
+        album: album,
       );
       if (!mounted) return;
-      Navigator.pop(context, asset);
+      await _onSavedAsset(asset);
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _recording = false;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -393,16 +486,28 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
     } catch (_) {}
     if (!mounted) return;
     setState(() => _recording = false);
-    Navigator.of(context).pop();
+    context.pop(_savedAssetIds);
+  }
+
+  void _close() {
+    context.pop(_savedAssetIds);
   }
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: !_recording,
+    // 시스템 back과 close 버튼 모두 같은 경로로 pop(_savedAssetIds)을
+    // 보내야 PhotosScreen이 fresh ID와 공유 다이얼로그를 처리할 수 있다.
+    // canPop: false로 둬서 시스템 back을 무조건 가로채고, 녹화 중이 아니면
+    // _close()로 위임.
+    return PopScope<Object?>(
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop || !_recording) return;
-        _onPopAttemptedWhileRecording();
+        if (didPop) return;
+        if (_recording) {
+          _onPopAttemptedWhileRecording();
+          return;
+        }
+        _close();
       },
       child: AnnotatedRegion<SystemUiOverlayStyle>(
         value: SystemUiOverlayStyle.light.copyWith(
@@ -432,10 +537,19 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
       );
     }
     final controller = _controller;
-    if (controller == null) {
+    if (controller == null || !controller.value.isInitialized) {
       return const Center(
         child: CircularProgressIndicator(color: Colors.white),
       );
+    }
+    final assetsState = ref.watch(albumLiveProvider(widget.albumName));
+    final recentAsset =
+        assetsState.items.isNotEmpty ? assetsState.items.first : null;
+    if (recentAsset != null) {
+      _ensureRecentBytes(recentAsset);
+    } else if (_recentAssetId != null) {
+      _recentAssetId = null;
+      _recentBytes = null;
     }
     final preview = controller.value.previewSize;
     return Stack(
@@ -488,9 +602,10 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
           top: 0,
           child: SafeArea(
             child: _CameraTopBar(
-              albumName: widget.album.name,
+              albumName: widget.albumName,
               flash: _flash,
               onCycleFlash: _cycleFlash,
+              onClose: _close,
             ),
           ),
         ),
@@ -538,13 +653,19 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
                       alignment: Alignment.centerLeft,
                       child: _RecentThumb(
                         bytes: _recentBytes,
-                        onTap: _recentAsset == null ? null : _openRecent,
+                        onTap: recentAsset == null
+                            ? null
+                            : () =>
+                                _openRecent(recentAsset, assetsState.items),
                       ),
                     ),
                     _ShutterButton(
                       mode: _mode,
                       busy: _busy,
                       recording: _recording,
+                      shutterPulse: _shutterPulse,
+                      recordPulse: _recordPulse,
+                      recordMorph: _recordMorph,
                       onTap: _mode == _Mode.photo
                           ? _capturePhoto
                           : _toggleRecording,
@@ -567,6 +688,22 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
             ),
           ),
         ),
+        if (_flashFlash != null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedBuilder(
+                animation: _flashFlash!,
+                builder: (_, __) {
+                  // 0→1 진행에서 alpha를 0→1→0 (삼각파)으로.
+                  final v = _flashFlash!.value;
+                  final triangle = v < 0.5 ? v * 2 : (1 - v) * 2;
+                  return ColoredBox(
+                    color: Colors.white.withValues(alpha: triangle * 0.6),
+                  );
+                },
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -577,11 +714,13 @@ class _CameraTopBar extends StatelessWidget {
     required this.albumName,
     required this.flash,
     required this.onCycleFlash,
+    required this.onClose,
   });
 
   final String albumName;
   final _Flash flash;
   final VoidCallback onCycleFlash;
+  final VoidCallback onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -590,7 +729,7 @@ class _CameraTopBar extends StatelessWidget {
       child: Row(
         children: [
           IconButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: onClose,
             icon: const Icon(Icons.close, color: Colors.white),
           ),
           Expanded(
@@ -801,13 +940,26 @@ class _ShutterButton extends StatelessWidget {
     required this.mode,
     required this.busy,
     required this.recording,
+    required this.shutterPulse,
+    required this.recordPulse,
+    required this.recordMorph,
     required this.onTap,
   });
 
   final _Mode mode;
   final bool busy;
   final bool recording;
+  final AnimationController? shutterPulse;
+  final AnimationController? recordPulse;
+  final AnimationController? recordMorph;
   final VoidCallback onTap;
+
+  static const _circleSize = 62.0;
+  static const _squareSize = 30.0;
+  static const _circleRadius = _circleSize / 2;
+  static const _squareRadius = 6.0;
+  static const _white = Color(0xFFFAF9F5);
+  static const _red = Color(0xFFC64545);
 
   @override
   Widget build(BuildContext context) {
@@ -818,38 +970,52 @@ class _ShutterButton extends StatelessWidget {
         height: 78,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          border: Border.all(
-            color: const Color(0xFFFAF9F5),
-            width: 4,
-          ),
+          border: Border.all(color: _white, width: 4),
         ),
         child: Center(
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOut,
-            width: recording ? 30 : 62,
-            height: recording ? 30 : 62,
-            decoration: BoxDecoration(
-              color: recording
-                  ? const Color(0xFFC64545)
-                  : const Color(0xFFFAF9F5),
-              borderRadius:
-                  BorderRadius.circular(recording ? 6 : 31),
+          child: AnimatedBuilder(
+            animation: Listenable.merge(
+              [shutterPulse, recordPulse, recordMorph],
             ),
-            child: busy
-                ? const Padding(
-                    padding: EdgeInsets.all(14),
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.5,
-                      color: Colors.black,
-                    ),
-                  )
-                : null,
+            builder: (context, _) {
+              // 영상 morph: 0=흰 원, 1=빨간 사각형. 셔터 누름에 따라
+              // forward/reverse가 직접 driving.
+              final morph = recordMorph?.value ?? 0.0;
+              // 사진 셔터: 0→0.5 사이엔 흰 원이 사라지고, 0.5→1 사이엔 복귀.
+              // 영상 morph 중엔 적용 안 함.
+              double scale = 1.0;
+              if (morph < 0.001 && shutterPulse != null) {
+                final v = shutterPulse!.value;
+                if (v > 0) {
+                  scale = v < 0.5 ? 1.0 - (v * 2) : (v - 0.5) * 2;
+                }
+              }
+              // 영상 녹화 중 heartbeat: 1.0 → 0.92 부드럽게 반복.
+              if (recording && recordPulse != null) {
+                scale = scale * (1.0 - 0.08 * recordPulse!.value);
+              }
+              final size = _lerp(_circleSize, _squareSize, morph);
+              final radius = _lerp(_circleRadius, _squareRadius, morph);
+              final color = Color.lerp(_white, _red, morph)!;
+              return Transform.scale(
+                scale: scale,
+                child: Container(
+                  width: size,
+                  height: size,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(radius),
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),
     );
   }
+
+  static double _lerp(double a, double b, double t) => a + (b - a) * t;
 }
 
 class _RecentThumb extends StatelessWidget {
@@ -863,24 +1029,20 @@ class _RecentThumb extends StatelessWidget {
     final hasImage = bytes != null;
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        width: 50,
-        height: 50,
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.08),
-          borderRadius: const BorderRadius.all(Radius.circular(12)),
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.7),
-            width: 2,
-          ),
-        ),
-        clipBehavior: Clip.antiAlias,
+      child: BorderedThumb(
+        size: 50,
+        outerRadius: 12,
+        borderWidth: 2,
+        borderColor: Colors.white.withValues(alpha: 0.7),
+        fillColor: Colors.white.withValues(alpha: 0.08),
         child: hasImage
             ? Image.memory(bytes!, fit: BoxFit.cover, gaplessPlayback: true)
-            : Icon(
-                Icons.image_outlined,
-                size: 20,
-                color: Colors.white.withValues(alpha: 0.6),
+            : Center(
+                child: Icon(
+                  Icons.image_outlined,
+                  size: 20,
+                  color: Colors.white.withValues(alpha: 0.6),
+                ),
               ),
       ),
     );

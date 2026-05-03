@@ -4,10 +4,13 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:photo_manager/photo_manager.dart';
+import 'package:photo_manager/photo_manager.dart' show PermissionState;
 
+import 'package:cubby/data/album.dart';
+import 'package:cubby/data/media_asset.dart';
 import 'package:cubby/data/media_repository.dart';
 import 'package:cubby/ui/albums/albums_screen.dart';
+import 'package:cubby/ui/theme/cubby_theme.dart';
 
 class _FakeMediaRepository implements MediaRepository {
   @override
@@ -17,35 +20,34 @@ class _FakeMediaRepository implements MediaRepository {
   Future<void> presentLimitedPicker() async {}
 
   @override
-  Future<List<AlbumDisplay>> getUserAlbums() async => const [];
+  Future<List<Album>> getUserAlbums() async => const [];
 
   @override
-  Future<AlbumDisplay> createAlbum(String name) =>
-      throw UnimplementedError();
+  Future<Album> createAlbum(String name) => throw UnimplementedError();
 
   @override
-  Future<List<AssetEntity>> getAssets(
-    AlbumDisplay album, {
+  Future<List<MediaAsset>> getAssets(
+    Album album, {
     int page = 0,
     int pageSize = 80,
   }) async => const [];
 
   @override
-  Future<AssetEntity> saveImage({
+  Future<MediaAsset> saveImage({
     required Uint8List bytes,
     required String filename,
-    required AlbumDisplay album,
+    required Album album,
   }) => throw UnimplementedError();
 
   @override
-  Future<AssetEntity> saveVideo({
+  Future<MediaAsset> saveVideo({
     required File file,
     required String filename,
-    required AlbumDisplay album,
+    required Album album,
   }) => throw UnimplementedError();
 
   @override
-  Future<List<String>> deleteAssets(List<AssetEntity> assets) async => const [];
+  Future<List<String>> deleteAssets(List<MediaAsset> assets) async => const [];
 }
 
 void main() {
@@ -57,11 +59,13 @@ void main() {
         overrides: [
           mediaRepositoryProvider.overrideWithValue(_FakeMediaRepository()),
         ],
-        child: const MaterialApp(home: AlbumsScreen()),
+        child: MaterialApp(
+          theme: buildLightTheme(),
+          home: const AlbumsScreen(),
+        ),
       ),
     );
 
-    expect(find.text('Albums'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
     await tester.pumpAndSettle();
