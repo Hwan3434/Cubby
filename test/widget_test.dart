@@ -48,6 +48,9 @@ class _FakeMediaRepository implements MediaRepository {
 
   @override
   Future<List<String>> deleteAssets(List<MediaAsset> assets) async => const [];
+
+  @override
+  Future<bool> deleteAlbum(Album album) async => false;
 }
 
 void main() {

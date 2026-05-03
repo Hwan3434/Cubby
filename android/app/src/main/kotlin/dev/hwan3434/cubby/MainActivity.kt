@@ -1,10 +1,14 @@
 package dev.hwan3434.cubby
 
+import android.app.Activity
 import android.content.ContentResolver
 import android.content.ContentUris
+import android.content.Intent
+import android.content.IntentSender
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -21,7 +25,13 @@ class MainActivity : FlutterActivity() {
         private const val TAG = "MediaRefresh"
         private const val CHANNEL = "cubby/media_refresh"
         private const val MAX_FILES_PER_DIR = 200
+        private const val REQ_DELETE_ALBUM = 4321
     }
+
+    /** 시스템 삭제 다이얼로그 결과를 기다리는 콜백. 한 번에 하나만. */
+    private var pendingDeleteResult: MethodChannel.Result? = null
+    /** 다이얼로그 동의 후 빈 폴더까지 정리하기 위해 보관. */
+    private var pendingDeleteDir: File? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -38,9 +48,34 @@ class MainActivity : FlutterActivity() {
                             latestCoverByBucket(bucket, size, result)
                         }
                     }
+                    "deleteAlbum" -> {
+                        val bucket = call.argument<String>("bucket")
+                        if (bucket == null) {
+                            result.error("bad_args", "bucket required", null)
+                        } else {
+                            deleteAlbum(bucket, result)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_DELETE_ALBUM) return
+        val pending = pendingDeleteResult
+        val dir = pendingDeleteDir
+        pendingDeleteResult = null
+        pendingDeleteDir = null
+        if (pending == null) return
+        if (resultCode == Activity.RESULT_OK) {
+            // 자산 삭제는 시스템이 처리. 빈 디렉토리는 우리가 정리.
+            try { dir?.takeIf { it.exists() && it.isDirectory }?.delete() } catch (_: Exception) {}
+            pending.success(true)
+        } else {
+            pending.success(false)
+        }
     }
 
     /**
@@ -264,5 +299,104 @@ class MainActivity : FlutterActivity() {
             Log.e(TAG, "loadThumbnailBytes failed for $uri", e)
             null
         }
+    }
+
+    /**
+     * bucket(앨범 이름) 안의 모든 image/video를 시스템 동의 다이얼로그로
+     * 한 번에 삭제. R+ (API 30) 이상은 [MediaStore.createDeleteRequest] 의
+     * IntentSender로 시스템이 묶음 삭제를 처리해주고, 그 이전 OS는
+     * not-implemented로 떨어뜨린다 (cubby min sdk 21이지만 MediaStore 묶음
+     * 삭제는 R 이상이라 그 이하는 사용자에게 의미있는 UX를 못 줌).
+     *
+     * 빈 디렉토리는 사용자가 다이얼로그를 허용한 직후 onActivityResult에서
+     * 정리한다. [MethodChannel.Result]는 시스템 다이얼로그 결과까지 들고
+     * 있다가 그때 success/false로 마무리.
+     */
+    private fun deleteAlbum(bucket: String, result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            result.error("unsupported", "deleteAlbum requires Android R+", null)
+            return
+        }
+        if (pendingDeleteResult != null) {
+            result.error("busy", "another deleteAlbum is in progress", null)
+            return
+        }
+        try {
+            val resolver: ContentResolver = applicationContext.contentResolver
+            val uris = mutableListOf<Uri>()
+            collectBucketUris(
+                resolver,
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                bucket,
+                uris,
+            )
+            collectBucketUris(
+                resolver,
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                bucket,
+                uris,
+            )
+            val dir = findBucketDir(bucket)
+            if (uris.isEmpty()) {
+                // 자산이 0이면 빈 폴더만 정리.
+                try { dir?.takeIf { it.exists() && it.isDirectory }?.delete() } catch (_: Exception) {}
+                result.success(true)
+                return
+            }
+            val pendingIntent = MediaStore.createDeleteRequest(resolver, uris)
+            pendingDeleteResult = result
+            pendingDeleteDir = dir
+            try {
+                startIntentSenderForResult(
+                    pendingIntent.intentSender,
+                    REQ_DELETE_ALBUM,
+                    null, 0, 0, 0,
+                )
+            } catch (e: IntentSender.SendIntentException) {
+                pendingDeleteResult = null
+                pendingDeleteDir = null
+                Log.e(TAG, "deleteAlbum sendIntent failed", e)
+                result.error("send_failed", e.message, null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteAlbum failed", e)
+            result.error("delete_failed", e.message, null)
+        }
+    }
+
+    /** 주어진 [collection]에서 [bucket]에 속한 자산의 content uri를 누적. */
+    private fun collectBucketUris(
+        resolver: ContentResolver,
+        collection: Uri,
+        bucket: String,
+        out: MutableList<Uri>,
+    ) {
+        val projection = arrayOf(MediaStore.MediaColumns._ID)
+        val selection = "${MediaStore.MediaColumns.BUCKET_DISPLAY_NAME} = ?"
+        val selectionArgs = arrayOf(bucket)
+        resolver.query(collection, projection, selection, selectionArgs, null)
+            ?.use { c ->
+                val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                while (c.moveToNext()) {
+                    out.add(ContentUris.withAppendedId(collection, c.getLong(idCol)))
+                }
+            }
+    }
+
+    /** Pictures/<bucket> 또는 DCIM/<bucket>/Movies/<bucket> 중 존재하는 디렉토리. */
+    private fun findBucketDir(bucket: String): File? {
+        val roots = listOf(
+            Environment.DIRECTORY_PICTURES,
+            Environment.DIRECTORY_DCIM,
+            Environment.DIRECTORY_MOVIES,
+        )
+        for (root in roots) {
+            val dir = File(
+                Environment.getExternalStoragePublicDirectory(root),
+                bucket,
+            )
+            if (dir.exists() && dir.isDirectory) return dir
+        }
+        return null
     }
 }

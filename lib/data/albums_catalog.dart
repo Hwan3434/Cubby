@@ -61,6 +61,19 @@ class AlbumsCatalogNotifier extends Notifier<AlbumsCatalogState> {
     final albums = await repo.getUserAlbums();
     state = state.copyWith(albums: albums);
   }
+
+  /// 앨범 삭제. 시스템 동의 다이얼로그가 떴다가 사용자가 허용하면 true,
+  /// 취소하거나 실패하면 false. 성공 시 catalog state는 다음 [refresh]/
+  /// [invalidateAlbum]에서 자연스럽게 빠지지만, 즉시 UI 반영을 위해
+  /// 여기서 한 번 갱신한다.
+  Future<bool> deleteAlbum(Album album) async {
+    final repo = ref.read(mediaRepositoryProvider);
+    final ok = await repo.deleteAlbum(album);
+    if (ok) {
+      await invalidateAlbum(album.name);
+    }
+    return ok;
+  }
 }
 
 final albumsCatalogProvider =

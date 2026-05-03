@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_expandable_fab/flutter_expandable_fab.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:share_plus/share_plus.dart';
@@ -8,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../app_router.dart';
 import '../../data/album.dart';
 import '../../data/album_live.dart';
+import '../../data/albums_catalog.dart';
 import '../../data/app_preferences.dart';
 import '../../data/media_asset.dart';
 import '../../data/media_repository.dart';
@@ -50,6 +52,10 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
   // 상태만 — 다중 선택, 정렬, 그룹 단위, 카메라에서 강조할 fresh ID, 그리드
   // 썸네일 캐시.
   final Set<String> _selected = {};
+
+  /// 시스템 back 가로채기용. expanded일 때 첫 번째 back은 FAB만 닫는다.
+  final GlobalKey<ExpandableFabState> _fabKey =
+      GlobalKey<ExpandableFabState>();
   final Map<String, Uint8List> _thumbBytes = {};
   final Set<String> _freshIds = {};
   bool _selectionMode = false;
@@ -195,6 +201,58 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     }
   }
 
+  /// 앨범 통째 삭제. 앱 자체 확인 다이얼로그 → (system: Android OS의 자산
+  /// 삭제 동의 다이얼로그가 한 번 더) → 성공 시 albums 목록으로 pop.
+  Future<void> _deleteAlbum() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('앨범 삭제'),
+        content: const Text('모든 사진과 앨범이 함께 영구삭제됩니다.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('아니요'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFC64545),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('예'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirm != true) return;
+
+    // album 인스턴스: 라우트 extra가 없을 수 있어 catalog에서 우선 lookup.
+    Album? album = widget.album;
+    if (album == null) {
+      for (final a in ref.read(albumsCatalogProvider).albums) {
+        if (a.name == _albumName) {
+          album = a;
+          break;
+        }
+      }
+    }
+    if (album == null) return;
+
+    try {
+      final ok =
+          await ref.read(albumsCatalogProvider.notifier).deleteAlbum(album);
+      if (!mounted) return;
+      if (ok) {
+        context.pop();
+      }
+      // ok=false는 사용자 OS 다이얼로그 취소 또는 iOS 미구현. silent 종료.
+    } catch (e) {
+      if (!mounted) return;
+      showError(context, '앨범 삭제 실패: $e');
+    }
+  }
+
   void _enterSelectionMode() {
     if (_selectionMode) return;
     setState(() => _selectionMode = true);
@@ -252,6 +310,13 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
         GroupingUnit.month => '월 단위로 봅니다',
       };
 
+  /// FAB chip처럼 짧은 공간에 들어가는 한 단어 라벨.
+  String _groupingShortLabel(GroupingUnit u) => switch (u) {
+        GroupingUnit.day => '일별',
+        GroupingUnit.week => '주별',
+        GroupingUnit.month => '월별',
+      };
+
   IconData _groupingIcon(GroupingUnit u) => switch (u) {
         GroupingUnit.day => Icons.view_day_outlined,
         GroupingUnit.week => Icons.view_week_outlined,
@@ -269,11 +334,29 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     final ordered = _orderItems(items);
     final sections = groupAssets(ordered, _grouping);
 
-    return Scaffold(
-      backgroundColor: scheme.surface,
-      body: SafeArea(
-        bottom: false,
-        child: Column(
+    // 시스템 back 가로채기: FAB이 펼쳐 있으면 그것부터 닫고, 다중선택
+    // 중이면 selection을 해제, 둘 다 아닐 때만 라우트를 pop. canPop은 build
+    // 시점에 stale일 수 있어 항상 false로 두고 분기는 핸들러에서.
+    return PopScope<Object?>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        final fabState = _fabKey.currentState;
+        if (fabState != null && fabState.isOpen) {
+          fabState.toggle();
+          return;
+        }
+        if (_selectionMode) {
+          _exitSelectionMode();
+          return;
+        }
+        context.pop();
+      },
+      child: Scaffold(
+        backgroundColor: scheme.surface,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
           children: [
             _DetailAppBar(
               albumName: _albumName,
@@ -281,14 +364,9 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
               selectionMode: _selectionMode,
               selectedCount: _selected.length,
               selectionLimit: _selectionLimit,
-              ascending: _ascending,
-              groupingUnit: _grouping,
-              groupingIcon: _groupingIcon(_grouping),
               onBack: () => context.pop(),
               onEnterSelection: items.isEmpty ? null : _enterSelectionMode,
               onExitSelection: _exitSelectionMode,
-              onToggleSort: items.isEmpty ? null : _toggleSort,
-              onCycleGrouping: items.isEmpty ? null : _cycleGrouping,
             ),
             Expanded(
               child: NotificationListener<ScrollNotification>(
@@ -342,31 +420,29 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
           ],
         ),
       ),
-      floatingActionButton: _selectionMode
-          ? null
-          : FloatingActionButton.extended(
-              onPressed: _openCamera,
-              icon: const Icon(Icons.photo_camera_outlined,
-                  color: Colors.white),
-              label: Text(
-                '앨범에 촬영',
-                style: CubbyType.buttonLabel.copyWith(color: Colors.white),
+        floatingActionButtonLocation:
+            _selectionMode ? null : ExpandableFab.location,
+        floatingActionButton: _selectionMode
+            ? null
+            : _PhotosFab(
+                fabKey: _fabKey,
+                onShoot: _openCamera,
+                onToggleSort: _toggleSort,
+                onCycleGrouping: _cycleGrouping,
+                onDeleteAlbum: _deleteAlbum,
+                ascending: _ascending,
+                groupingIcon: _groupingIcon(_grouping),
+                groupingLabel: _groupingShortLabel(_grouping),
               ),
-              backgroundColor: scheme.primary,
-              foregroundColor: Colors.white,
-              elevation: 6,
-              shape: const RoundedRectangleBorder(
-                borderRadius: CubbyRadius.xlAll,
-              ),
-            ),
-      bottomNavigationBar: _selectionMode
-          ? _MultiSelectActionBar(
-              selectedCount: _selected.length,
-              limit: _selectionLimit,
-              onShare: _selected.isEmpty ? null : _shareSelected,
-              onDelete: _selected.isEmpty ? null : _deleteSelected,
-            )
-          : null,
+        bottomNavigationBar: _selectionMode
+            ? _MultiSelectActionBar(
+                selectedCount: _selected.length,
+                limit: _selectionLimit,
+                onShare: _selected.isEmpty ? null : _shareSelected,
+                onDelete: _selected.isEmpty ? null : _deleteSelected,
+              )
+            : null,
+      ),
     );
   }
 
@@ -409,14 +485,9 @@ class _DetailAppBar extends StatelessWidget {
     required this.selectionMode,
     required this.selectedCount,
     required this.selectionLimit,
-    required this.ascending,
-    required this.groupingUnit,
-    required this.groupingIcon,
     required this.onBack,
     required this.onEnterSelection,
     required this.onExitSelection,
-    required this.onToggleSort,
-    required this.onCycleGrouping,
   });
 
   final String albumName;
@@ -424,14 +495,9 @@ class _DetailAppBar extends StatelessWidget {
   final bool selectionMode;
   final int selectedCount;
   final int selectionLimit;
-  final bool ascending;
-  final GroupingUnit groupingUnit;
-  final IconData groupingIcon;
   final VoidCallback onBack;
   final VoidCallback? onEnterSelection;
   final VoidCallback onExitSelection;
-  final VoidCallback? onToggleSort;
-  final VoidCallback? onCycleGrouping;
 
   @override
   Widget build(BuildContext context) {
@@ -466,7 +532,7 @@ class _DetailAppBar extends StatelessWidget {
               ],
             ),
           ),
-          if (!selectionMode) ...[
+          if (!selectionMode)
             IconButton(
               onPressed: onEnterSelection,
               icon: Icon(
@@ -477,27 +543,6 @@ class _DetailAppBar extends StatelessWidget {
               ),
               tooltip: '다중 선택',
             ),
-            IconButton(
-              onPressed: onCycleGrouping,
-              icon: Icon(
-                groupingIcon,
-                color: onCycleGrouping == null
-                    ? cubby.mutedSoft
-                    : scheme.onSurface,
-              ),
-              tooltip: '그룹 단위',
-            ),
-            IconButton(
-              onPressed: onToggleSort,
-              icon: Icon(
-                ascending ? Icons.arrow_upward : Icons.arrow_downward,
-                color: onToggleSort == null
-                    ? cubby.mutedSoft
-                    : scheme.onSurface,
-              ),
-              tooltip: '정렬',
-            ),
-          ],
         ],
       ),
     );
@@ -816,6 +861,161 @@ class _MultiSelectActionBar extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Speed-dial FAB. 메인 = 촬영(가장 자주 쓰는 동작), 펼치면 정렬 토글 +
+/// 그룹 단위 cycle. 다중 선택 모드일 땐 부모가 통째로 안 그리므로 selection
+/// 진입 시 펼친 상태가 자연스럽게 닫힌다.
+class _PhotosFab extends StatelessWidget {
+  const _PhotosFab({
+    required this.fabKey,
+    required this.onShoot,
+    required this.onToggleSort,
+    required this.onCycleGrouping,
+    required this.onDeleteAlbum,
+    required this.ascending,
+    required this.groupingIcon,
+    required this.groupingLabel,
+  });
+
+  /// 부모가 들고 있는 ExpandableFabState 접근용 GlobalKey. 시스템 back으로
+  /// FAB을 먼저 닫는 동작에 사용.
+  final GlobalKey<ExpandableFabState> fabKey;
+  final VoidCallback onShoot;
+  final VoidCallback onToggleSort;
+  final VoidCallback onCycleGrouping;
+  final VoidCallback onDeleteAlbum;
+  final bool ascending;
+  final IconData groupingIcon;
+  final String groupingLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ExpandableFab(
+      key: fabKey,
+      type: ExpandableFabType.up,
+      distance: 64,
+      // 펼쳤을 때 화면 어둡게 처리 — 보조 동작 강조 + 그리드 흐림.
+      overlayStyle: ExpandableFabOverlayStyle(
+        color: Colors.black.withValues(alpha: 0.32),
+      ),
+      openButtonBuilder: RotateFloatingActionButtonBuilder(
+        child: const Icon(Icons.photo_camera_outlined, color: Colors.white),
+        fabSize: ExpandableFabSize.regular,
+        backgroundColor: scheme.primary,
+        foregroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(borderRadius: CubbyRadius.xlAll),
+      ),
+      closeButtonBuilder: RotateFloatingActionButtonBuilder(
+        child: const Icon(Icons.close, color: Colors.white),
+        fabSize: ExpandableFabSize.regular,
+        backgroundColor: scheme.primary,
+        foregroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(borderRadius: CubbyRadius.xlAll),
+      ),
+      childrenAnimation: ExpandableFabAnimation.rotate,
+      children: [
+        // 펼치면 메인 FAB이 닫힘 아이콘으로 morph되어 "촬영" 자체가 child로
+        // 한 번 더 노출돼야 사용자가 헷갈리지 않음.
+        _FabAction(
+          heroTag: 'photos_fab_shoot',
+          icon: Icons.photo_camera_outlined,
+          label: '촬영',
+          onPressed: onShoot,
+        ),
+        _FabAction(
+          heroTag: 'photos_fab_sort',
+          icon: ascending ? Icons.arrow_upward : Icons.arrow_downward,
+          label: ascending ? '오래된순' : '최신순',
+          onPressed: onToggleSort,
+        ),
+        _FabAction(
+          heroTag: 'photos_fab_group',
+          icon: groupingIcon,
+          label: groupingLabel,
+          onPressed: onCycleGrouping,
+        ),
+        _FabAction(
+          heroTag: 'photos_fab_delete',
+          icon: Icons.delete_outline,
+          label: '앨범 삭제',
+          onPressed: onDeleteAlbum,
+          danger: true,
+        ),
+      ],
+    );
+  }
+}
+
+/// child FAB + 좌측 라벨 칩. ExpandableFab.location 기준 우하단에 그려져
+/// 라벨이 화면 밖으로 잘리지 않는다. 배경/border는 모든 child에서 동일하게
+/// 통일해 메인 FAB(coral)만 강조되도록.
+class _FabAction extends StatelessWidget {
+  const _FabAction({
+    required this.heroTag,
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.danger = false,
+  });
+
+  final String heroTag;
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  /// 위험 동작(예: 앨범 삭제). 칩과 FAB 둘 다 빨간 톤으로 강조해 일반 child와
+  /// 시각적으로 구분.
+  final bool danger;
+
+  static const Color _dangerFg = Color(0xFFC64545);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final cubby = context.cubby;
+    final fg = danger ? _dangerFg : scheme.onSurface;
+    final borderColor = danger ? _dangerFg.withValues(alpha: 0.45) : cubby.hairline;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: CubbySpacing.sm,
+            vertical: 6,
+          ),
+          decoration: BoxDecoration(
+            color: scheme.surface,
+            borderRadius: CubbyRadius.mdAll,
+            border: Border.all(color: borderColor),
+          ),
+          child: Text(
+            label,
+            style: CubbyType.caption.copyWith(
+              fontSize: 12,
+              color: fg,
+              fontWeight: danger ? FontWeight.w600 : FontWeight.w500,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        FloatingActionButton.small(
+          heroTag: heroTag,
+          onPressed: onPressed,
+          backgroundColor: scheme.surface,
+          foregroundColor: fg,
+          elevation: 4,
+          shape: RoundedRectangleBorder(
+            borderRadius: CubbyRadius.lgAll,
+            side: BorderSide(color: borderColor),
+          ),
+          tooltip: label,
+          child: Icon(icon),
+        ),
+      ],
     );
   }
 }

@@ -7,6 +7,7 @@ import 'package:photo_manager/photo_manager.dart';
 
 import 'album.dart';
 import 'media_asset.dart';
+import 'media_refresh.dart';
 import 'photo_manager_asset.dart';
 
 /// App-wide MediaRepository. Always returns a [PhotoManagerMediaRepository]
@@ -81,6 +82,15 @@ abstract class MediaRepository {
   /// that were successfully deleted. Android 11+ and iOS show a system
   /// confirmation dialog automatically.
   Future<List<String>> deleteAssets(List<MediaAsset> assets);
+
+  /// 앨범과 그 안의 모든 자산을 삭제.
+  ///
+  /// - placeholder: 메모리상에서만 제거 (system 호출 없음). 항상 true.
+  /// - system (Android 11+/iOS): 시스템 동의 다이얼로그가 자동으로 뜸. 사용자가
+  ///   허용하면 true, 취소하면 false. 빈 디렉토리도 함께 정리한다.
+  ///
+  /// 반환값이 true면 호출자는 catalog/live state를 갱신해 UI를 동기화해야 한다.
+  Future<bool> deleteAlbum(Album album);
 }
 
 class PhotoManagerMediaRepository implements MediaRepository {
@@ -314,6 +324,24 @@ class PhotoManagerMediaRepository implements MediaRepository {
       }
     }
     return PhotoManagerAsset(asset);
+  }
+
+  @override
+  Future<bool> deleteAlbum(Album album) async {
+    if (album.isPlaceholder) {
+      _placeholderNames.remove(album.name);
+      return true;
+    }
+    // system 앨범 삭제는 photo_manager가 지원하지 않아 native channel로 위임.
+    // Android: MediaStore.createDeleteRequest IntentSender → 시스템 다이얼로그.
+    // iOS: 추후 PhotoKit performChanges로 구현 예정 (현재 not implemented).
+    final ok = await deleteAlbumNative(album.name);
+    if (ok) {
+      // 다음 getUserAlbums에서 system에 더 이상 없으면 자연스럽게 빠진다.
+      // 캐시도 비워서 stale lookup 방지.
+      _pathCache.remove(album.name);
+    }
+    return ok;
   }
 
   @override

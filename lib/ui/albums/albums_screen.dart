@@ -259,12 +259,19 @@ class _AlbumsBody extends ConsumerWidget {
                   style: CubbyType.caption.copyWith(color: cubby.muted),
                 );
 
+                // 메타 영역 = Row(이름+카운트 컬럼, 카메라 버튼). 두 child 중
+                // 더 큰 값이 row 높이를 결정한다.
+                final textColumnHeight =
+                    titleHeight + titleCountGap + countHeight;
+                const cameraButtonHeight = _CardCameraButton.size;
+                final metaHeight = textColumnHeight > cameraButtonHeight
+                    ? textColumnHeight
+                    : cameraButtonHeight;
+
                 final cellHeight = cardPaddingTop +
                     coverSize +
                     coverGap +
-                    titleHeight +
-                    titleCountGap +
-                    countHeight +
+                    metaHeight +
                     cardPaddingBottom;
 
                 return SliverPadding(
@@ -443,24 +450,73 @@ class _AlbumCard extends ConsumerWidget {
                 child: _CoverPager(empty: isEmpty, assets: assets),
               ),
               const SizedBox(height: CubbySpacing.sm),
-              Text(
-                album.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: CubbyType.titleSm.copyWith(
-                  fontSize: 14,
-                  color: scheme.onSurface,
-                ),
-              ),
-              const SizedBox(height: titleCountGap),
-              Text(
-                isEmpty ? '비어 있음' : '$effectiveCount개',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: CubbyType.caption.copyWith(color: cubby.muted),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          album.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: CubbyType.titleSm.copyWith(
+                            fontSize: 14,
+                            color: scheme.onSurface,
+                          ),
+                        ),
+                        const SizedBox(height: titleCountGap),
+                        Text(
+                          isEmpty ? '비어 있음' : '$effectiveCount개',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: CubbyType.caption.copyWith(
+                            color: cubby.muted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // 우측 카메라 단축 버튼: 카드 자체 탭은 PhotosScreen으로,
+                  // 이 버튼만 곧장 카메라로. PhotosScreen이 shoot=1로 stack에
+                  // 자동 push되어 카메라 뒤로가기 시 자연스럽게 앨범 상세에
+                  // 머무른다.
+                  _CardCameraButton(album: album),
+                ],
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CardCameraButton extends StatelessWidget {
+  const _CardCameraButton({required this.album});
+
+  /// 그리드 셀 높이 계산이 메타 영역(이름·카운트 vs 카메라 버튼) 둘 중 큰
+  /// 값을 잡아야 해서 노출.
+  static const double size = 32;
+
+  final Album album;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: size,
+      height: size,
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        iconSize: 18,
+        tooltip: '바로 촬영',
+        icon: Icon(Icons.photo_camera_outlined, color: scheme.primary),
+        onPressed: () => context.push(
+          AppRoutes.albumWithImmediateShoot(album.name),
+          extra: album,
         ),
       ),
     );

@@ -63,6 +63,29 @@ Future<NativeCover?> fetchLatestCoverNative(
   }
 }
 
+/// 앨범(bucket) 안의 모든 자산을 시스템 동의 하에 삭제하고 빈 디렉토리도
+/// 정리. Android는 MediaStore.createDeleteRequest IntentSender를 사용해 시스템
+/// 다이얼로그를 띄우고, 사용자가 동의하면 true, 취소하면 false를 반환한다.
+///
+/// iOS는 PhotoKit으로 구현 예정 — 현재는 항상 false (not implemented).
+Future<bool> deleteAlbumNative(String bucket) async {
+  if (!Platform.isAndroid) return false;
+  const channel = MethodChannel('cubby/media_refresh');
+  try {
+    final res = await channel.invokeMethod<bool>(
+      'deleteAlbum',
+      {'bucket': bucket},
+    );
+    return res ?? false;
+  } on PlatformException catch (e) {
+    debugPrint('[mediaRefresh] deleteAlbum($bucket) error: $e');
+    return false;
+  } catch (e) {
+    debugPrint('[mediaRefresh] deleteAlbum($bucket) error: $e');
+    return false;
+  }
+}
+
 class NativeCover {
   NativeCover({
     required this.id,
