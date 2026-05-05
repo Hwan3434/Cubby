@@ -328,20 +328,27 @@ class PhotoManagerMediaRepository implements MediaRepository {
 
   @override
   Future<bool> deleteAlbum(Album album) async {
+    // 방금 saveImage된 자산은 우리 프로세스 ContentResolver binder cache가 stale
+    // 이라 native query가 0건으로 떨어질 수 있다. cache를 비우고 MediaScanner를
+    // 한 번 통과시켜 fresh를 보장한 뒤 native에 위임.
+    try {
+      await PhotoManager.releaseCache();
+    } catch (_) {}
+    await scanCameraDirs();
+    // placeholder는 메모리 자리표시자라 시스템 앨범 삭제 흐름이 본질적으로 안
+    // 맞지만, 그 사이 사용자가 카메라로 사진/영상을 저장했다면 disk에 실제 폴더
+    // 와 파일이 떨어져 있을 수 있다(photo_manager가 아직 system 앨범으로 인식
+    // 못 한 상태). 그래서 메모리 entry 정리와 native 정리를 같이 시도한다.
     if (album.isPlaceholder) {
       _placeholderNames.remove(album.name);
-      return true;
     }
-    // system 앨범 삭제는 photo_manager가 지원하지 않아 native channel로 위임.
-    // Android: MediaStore.createDeleteRequest IntentSender → 시스템 다이얼로그.
-    // iOS: 추후 PhotoKit performChanges로 구현 예정 (현재 not implemented).
     final ok = await deleteAlbumNative(album.name);
     if (ok) {
-      // 다음 getUserAlbums에서 system에 더 이상 없으면 자연스럽게 빠진다.
-      // 캐시도 비워서 stale lookup 방지.
       _pathCache.remove(album.name);
     }
-    return ok;
+    // placeholder는 메모리 정리만으로도 UX 측면에서 "삭제됨"이라 native가 빈
+    // 폴더/0건으로 success(true) 반환했든 사용자 입장에선 OK.
+    return ok || album.isPlaceholder;
   }
 
   @override

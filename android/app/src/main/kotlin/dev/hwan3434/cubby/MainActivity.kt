@@ -30,6 +30,10 @@ class MainActivity : FlutterActivity() {
         private const val CHANNEL = "cubby/media_refresh"
         private const val MAX_FILES_PER_DIR = 200
         private const val REQ_DELETE_ALBUM = 4321
+
+        // 일부 OEM은 변경 없는 파일에 scanFile 콜백을 늦게 부른다 — 이 시한 안에
+        // 다 못 받으면 fallback path(직접 query)로 진행.
+        private const val SCAN_LATCH_TIMEOUT_MS = 1500L
     }
 
     /** 시스템 삭제 다이얼로그 결과를 기다리는 콜백. 한 번에 하나만. */
@@ -380,11 +384,8 @@ class MainActivity : FlutterActivity() {
             val takenCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
             val addedCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
             val dataCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
-            val durationCol = if (isVideo) {
-                c.getColumnIndex(MediaStore.Video.Media.DURATION)
-            } else {
-                -1
-            }
+            // 미존재 컬럼이면 -1 반환 — image projection엔 DURATION이 없으니 그대로 넘긴다.
+            val durationCol = c.getColumnIndex(MediaStore.Video.Media.DURATION)
             var taken = 0
             while (c.moveToNext() && taken < limit) {
                 out.add(
@@ -445,63 +446,74 @@ class MainActivity : FlutterActivity() {
             result.error("busy", "another deleteAlbum is in progress", null)
             return
         }
-        // 디스크 폴더부터 찾아 그 안의 모든 파일을 MediaScanner로 commit 강제.
-        // cubby 자체 카메라가 방금 saveImage한 직후 같은 프로세스 binder cache가
-        // 새 자산을 못 보는 stale window에서도 query가 fresh 결과를 받게 한다.
         val dirs = findBucketDirs(bucket)
         val files = dirs.flatMap { collectMediaFiles(it) }
         if (files.isEmpty()) {
-            collectAndDelete(bucket, dirs, result)
+            // 디스크 잔여 파일 없음 — BUCKET으로만 한 번 시도.
+            proceedWithUris(bucket, dirs, emptyList(), result)
             return
         }
+        // scanFile callback이 (path, uri)를 돌려주는데, stale binder cache 안에서도
+        // 정확한 Uri를 신뢰할 수 있는 유일한 출처. 다만 일부 OEM에서 metadata
+        // 변경 없는 파일에 콜백을 늦게 발사하므로 timeout latch로 안전망.
+        val collected = mutableListOf<Uri>()
         var pending = files.size
-        MediaScannerConnection.scanFile(
-            applicationContext,
-            files.toTypedArray(),
-            null,
-        ) { _, _ ->
+        var dispatched = false
+        fun dispatch() {
             synchronized(this) {
-                pending--
-                if (pending == 0) {
-                    runOnUiThread { collectAndDelete(bucket, dirs, result) }
-                }
+                if (dispatched) return
+                dispatched = true
+            }
+            runOnUiThread {
+                proceedWithUris(bucket, dirs, collected.toList(), result)
             }
         }
+        try {
+            MediaScannerConnection.scanFile(
+                applicationContext, files.toTypedArray(), null,
+            ) { _, uri ->
+                synchronized(this) {
+                    if (uri != null) collected.add(uri)
+                    pending--
+                    if (pending == 0) dispatch()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteAlbum scanFile failed", e)
+            result.error("scan_failed", e.message, null)
+            return
+        }
+        // 콜백이 시한 안에 다 안 오면 fallback path로 진행.
+        Handler(Looper.getMainLooper()).postDelayed({ dispatch() }, SCAN_LATCH_TIMEOUT_MS)
     }
 
-    private fun collectAndDelete(
+    private fun proceedWithUris(
         bucket: String,
         dirs: List<File>,
+        scannedUris: List<Uri>,
         result: MethodChannel.Result,
     ) {
+        if (pendingDeleteResult === result) return // double-dispatch 방어
         try {
-            val resolver: ContentResolver = applicationContext.contentResolver
-            val uris = mutableListOf<Uri>()
-            // BUCKET_DISPLAY_NAME 매칭이 stale binder cache로 빈 결과를 줄 수
-            // 있다(외부 카메라가 갓 commit한 자산을 우리 프로세스가 못 봄).
-            // 디스크 폴더의 file path로 직접 매핑하면 cache stale에 안 흔들림.
-            val files = dirs.flatMap { collectMediaFiles(it) }
-            for (path in files) {
-                lookupUriByData(resolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, path)
-                    ?.let(uris::add)
-                lookupUriByData(resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, path)
-                    ?.let(uris::add)
+            val resolver = applicationContext.contentResolver
+            val uris = scannedUris.toMutableList()
+            // scanFile이 못 잡은 자산은 file path 직접 lookup으로 보강.
+            if (uris.isEmpty()) {
+                val files = dirs.flatMap { collectMediaFiles(it) }
+                for (path in files) {
+                    lookupUriByData(resolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, path)
+                        ?.let(uris::add)
+                        ?: lookupUriByData(resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, path)
+                            ?.let(uris::add)
+                }
             }
-            // file path 매핑이 비었으면 BUCKET 검색으로 fallback (앨범에 disk
-            // 잔여 파일이 없는 케이스 — 예: 시스템 카메라가 다른 경로에 떨궜는데
-            // bucket 이름만 같은 경우).
+            // 그래도 없으면 BUCKET 검색.
             if (uris.isEmpty()) {
                 collectBucketUris(
-                    resolver,
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    bucket,
-                    uris,
+                    resolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, bucket, uris,
                 )
                 collectBucketUris(
-                    resolver,
-                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                    bucket,
-                    uris,
+                    resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, bucket, uris,
                 )
             }
             if (uris.isEmpty()) {
