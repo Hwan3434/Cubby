@@ -24,7 +24,7 @@ Future<void> scanCameraDirs() async {
 Future<List<NativeRecent>> fetchRecentByBucket(
   String bucket, {
   int limit = 8,
-  int size = 200,
+  int size = 480,
 }) async {
   if (!Platform.isAndroid) return const [];
   const channel = MethodChannel('cubby/media_refresh');
@@ -44,6 +44,7 @@ Future<List<NativeRecent>> fetchRecentByBucket(
       final dateTaken = (entry['dateTaken'] as num?)?.toInt() ?? 0;
       final dateAdded = (entry['dateAdded'] as num?)?.toInt() ?? 0;
       final data = entry['data'] as String?;
+      final duration = (entry['duration'] as num?)?.toInt() ?? 0;
       out.add(
         NativeRecent(
           id: id,
@@ -52,6 +53,7 @@ Future<List<NativeRecent>> fetchRecentByBucket(
           dateTaken: dateTaken,
           dateAdded: dateAdded,
           data: data,
+          durationMs: duration,
         ),
       );
     }
@@ -97,6 +99,7 @@ class NativeRecent {
     required this.dateTaken,
     required this.dateAdded,
     required this.data,
+    required this.durationMs,
   });
 
   /// MediaStore _ID. image/video 컬렉션이 분리돼 있어 [isVideo]와 함께 키.
@@ -114,6 +117,9 @@ class NativeRecent {
 
   /// 절대 파일 경로. detail/share에서 원본 파일 직접 접근에 사용.
   final String? data;
+
+  /// MediaStore.Video.Media.DURATION (ms). image면 0.
+  final int durationMs;
 
   /// photo_manager의 createDateTime과 비교 가능한 ms epoch.
   /// dateTaken이 비어있을 때 dateAdded로 폴백.

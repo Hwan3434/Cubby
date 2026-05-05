@@ -74,12 +74,11 @@ class AlbumLive {
 }
 
 extension AlbumLiveDerived on AlbumLive {
-  /// catalog의 storedCount가 photo_manager stale 때문에 뒤처질 때 items.length가
-  /// 더 정확해 그쪽을 우선.
+  /// 화면에 표시할 카운트. photo_manager stale로 catalog/items가 새 자산을
+  /// 누락한 동안에도 native fallback을 합친 [gridItems]가 진실에 가깝다.
   int effectiveCountWith(Album album) {
-    return items.length > album.storedCount
-        ? items.length
-        : album.storedCount;
+    final base = gridItems.length;
+    return base > album.storedCount ? base : album.storedCount;
   }
 }
 
@@ -211,6 +210,7 @@ class AlbumLiveNotifier extends Notifier<AlbumLive> {
             createdAt: DateTime.fromMillisecondsSinceEpoch(r.effectiveTakenMs),
             filePath: r.data,
             isVideo: r.isVideo,
+            duration: Duration(milliseconds: r.durationMs),
           ),
         )
         .toList()

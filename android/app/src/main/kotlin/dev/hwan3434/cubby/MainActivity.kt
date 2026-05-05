@@ -34,8 +34,11 @@ class MainActivity : FlutterActivity() {
 
     /** 시스템 삭제 다이얼로그 결과를 기다리는 콜백. 한 번에 하나만. */
     private var pendingDeleteResult: MethodChannel.Result? = null
-    /** 다이얼로그 동의 후 빈 폴더까지 정리하기 위해 보관. */
-    private var pendingDeleteDir: File? = null
+    /**
+     * 다이얼로그 동의 후 빈 폴더까지 정리하기 위해 보관. 한 앨범이라도 image는
+     * Pictures/<name>/, video는 Movies/<name>/에 분산 저장되므로 List.
+     */
+    private var pendingDeleteDirs: List<File> = emptyList()
 
     // 외부 카메라가 백그라운드 동안 commit한 사진을 photo_manager가 못 보는
     // 함정 우회용. observer 등록만으로 MediaProvider가 우리 프로세스 binder
@@ -117,16 +120,24 @@ class MainActivity : FlutterActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQ_DELETE_ALBUM) return
         val pending = pendingDeleteResult
-        val dir = pendingDeleteDir
+        val dirs = pendingDeleteDirs
         pendingDeleteResult = null
-        pendingDeleteDir = null
+        pendingDeleteDirs = emptyList()
         if (pending == null) return
         if (resultCode == Activity.RESULT_OK) {
             // 자산 삭제는 시스템이 처리. 빈 디렉토리는 우리가 정리.
-            try { dir?.takeIf { it.exists() && it.isDirectory }?.delete() } catch (_: Exception) {}
+            deleteEmptyDirs(dirs)
             pending.success(true)
         } else {
             pending.success(false)
+        }
+    }
+
+    private fun deleteEmptyDirs(dirs: List<File>) {
+        for (d in dirs) {
+            try {
+                if (d.exists() && d.isDirectory) d.delete()
+            } catch (_: Exception) {}
         }
     }
 
@@ -291,6 +302,7 @@ class MainActivity : FlutterActivity() {
                         "dateAdded" to row.dateAddedSec,
                         "data" to row.data,
                         "bytes" to bytes,
+                        "duration" to row.durationMs,
                     ),
                 )
             }
@@ -307,6 +319,7 @@ class MainActivity : FlutterActivity() {
         val dateTakenMs: Long,
         val dateAddedSec: Long,
         val data: String?,
+        val durationMs: Long,
     ) {
         val collection: Uri
             get() = if (isVideo) {
@@ -331,12 +344,22 @@ class MainActivity : FlutterActivity() {
         } else {
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
-        val projection = arrayOf(
-            MediaStore.MediaColumns._ID,
-            MediaStore.MediaColumns.DATE_TAKEN,
-            MediaStore.MediaColumns.DATE_ADDED,
-            MediaStore.MediaColumns.DATA,
-        )
+        val projection = if (isVideo) {
+            arrayOf(
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.DATE_TAKEN,
+                MediaStore.MediaColumns.DATE_ADDED,
+                MediaStore.MediaColumns.DATA,
+                MediaStore.Video.Media.DURATION,
+            )
+        } else {
+            arrayOf(
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.DATE_TAKEN,
+                MediaStore.MediaColumns.DATE_ADDED,
+                MediaStore.MediaColumns.DATA,
+            )
+        }
         val selection = "${MediaStore.MediaColumns.BUCKET_DISPLAY_NAME} = ?"
         val args = arrayOf(bucket)
         val sortOrder =
@@ -357,6 +380,11 @@ class MainActivity : FlutterActivity() {
             val takenCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
             val addedCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
             val dataCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
+            val durationCol = if (isVideo) {
+                c.getColumnIndex(MediaStore.Video.Media.DURATION)
+            } else {
+                -1
+            }
             var taken = 0
             while (c.moveToNext() && taken < limit) {
                 out.add(
@@ -366,6 +394,7 @@ class MainActivity : FlutterActivity() {
                         dateTakenMs = c.getLong(takenCol),
                         dateAddedSec = c.getLong(addedCol),
                         data = c.getString(dataCol),
+                        durationMs = if (durationCol >= 0) c.getLong(durationCol) else 0L,
                     ),
                 )
                 taken++
@@ -416,31 +445,73 @@ class MainActivity : FlutterActivity() {
             result.error("busy", "another deleteAlbum is in progress", null)
             return
         }
+        // 디스크 폴더부터 찾아 그 안의 모든 파일을 MediaScanner로 commit 강제.
+        // cubby 자체 카메라가 방금 saveImage한 직후 같은 프로세스 binder cache가
+        // 새 자산을 못 보는 stale window에서도 query가 fresh 결과를 받게 한다.
+        val dirs = findBucketDirs(bucket)
+        val files = dirs.flatMap { collectMediaFiles(it) }
+        if (files.isEmpty()) {
+            collectAndDelete(bucket, dirs, result)
+            return
+        }
+        var pending = files.size
+        MediaScannerConnection.scanFile(
+            applicationContext,
+            files.toTypedArray(),
+            null,
+        ) { _, _ ->
+            synchronized(this) {
+                pending--
+                if (pending == 0) {
+                    runOnUiThread { collectAndDelete(bucket, dirs, result) }
+                }
+            }
+        }
+    }
+
+    private fun collectAndDelete(
+        bucket: String,
+        dirs: List<File>,
+        result: MethodChannel.Result,
+    ) {
         try {
             val resolver: ContentResolver = applicationContext.contentResolver
             val uris = mutableListOf<Uri>()
-            collectBucketUris(
-                resolver,
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                bucket,
-                uris,
-            )
-            collectBucketUris(
-                resolver,
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                bucket,
-                uris,
-            )
-            val dir = findBucketDir(bucket)
+            // BUCKET_DISPLAY_NAME 매칭이 stale binder cache로 빈 결과를 줄 수
+            // 있다(외부 카메라가 갓 commit한 자산을 우리 프로세스가 못 봄).
+            // 디스크 폴더의 file path로 직접 매핑하면 cache stale에 안 흔들림.
+            val files = dirs.flatMap { collectMediaFiles(it) }
+            for (path in files) {
+                lookupUriByData(resolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, path)
+                    ?.let(uris::add)
+                lookupUriByData(resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, path)
+                    ?.let(uris::add)
+            }
+            // file path 매핑이 비었으면 BUCKET 검색으로 fallback (앨범에 disk
+            // 잔여 파일이 없는 케이스 — 예: 시스템 카메라가 다른 경로에 떨궜는데
+            // bucket 이름만 같은 경우).
             if (uris.isEmpty()) {
-                // 자산이 0이면 빈 폴더만 정리.
-                try { dir?.takeIf { it.exists() && it.isDirectory }?.delete() } catch (_: Exception) {}
+                collectBucketUris(
+                    resolver,
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    bucket,
+                    uris,
+                )
+                collectBucketUris(
+                    resolver,
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    bucket,
+                    uris,
+                )
+            }
+            if (uris.isEmpty()) {
+                deleteEmptyDirs(dirs)
                 result.success(true)
                 return
             }
             val pendingIntent = MediaStore.createDeleteRequest(resolver, uris)
             pendingDeleteResult = result
-            pendingDeleteDir = dir
+            pendingDeleteDirs = dirs
             try {
                 startIntentSenderForResult(
                     pendingIntent.intentSender,
@@ -449,13 +520,34 @@ class MainActivity : FlutterActivity() {
                 )
             } catch (e: IntentSender.SendIntentException) {
                 pendingDeleteResult = null
-                pendingDeleteDir = null
+                pendingDeleteDirs = emptyList()
                 Log.e(TAG, "deleteAlbum sendIntent failed", e)
                 result.error("send_failed", e.message, null)
             }
         } catch (e: Exception) {
             Log.e(TAG, "deleteAlbum failed", e)
             result.error("delete_failed", e.message, null)
+        }
+    }
+
+    private fun lookupUriByData(
+        resolver: ContentResolver,
+        collection: Uri,
+        path: String,
+    ): Uri? {
+        return resolver.query(
+            collection,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.DATA} = ?",
+            arrayOf(path),
+            null,
+        )?.use { c ->
+            if (c.moveToFirst()) {
+                val id = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                ContentUris.withAppendedId(collection, id)
+            } else {
+                null
+            }
         }
     }
 
@@ -478,20 +570,16 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    /** Pictures/<bucket> 또는 DCIM/<bucket>/Movies/<bucket> 중 존재하는 디렉토리. */
-    private fun findBucketDir(bucket: String): File? {
+    // 한 앨범의 image는 Pictures/<bucket>/, video는 Movies/<bucket>/ 으로 분산
+    // 저장될 수 있어 매치되는 모든 디렉토리를 반환.
+    private fun findBucketDirs(bucket: String): List<File> {
         val roots = listOf(
             Environment.DIRECTORY_PICTURES,
             Environment.DIRECTORY_DCIM,
             Environment.DIRECTORY_MOVIES,
         )
-        for (root in roots) {
-            val dir = File(
-                Environment.getExternalStoragePublicDirectory(root),
-                bucket,
-            )
-            if (dir.exists() && dir.isDirectory) return dir
-        }
-        return null
+        return roots
+            .map { File(Environment.getExternalStoragePublicDirectory(it), bucket) }
+            .filter { it.exists() && it.isDirectory }
     }
 }
