@@ -70,7 +70,9 @@ class _AlbumsScreenState extends ConsumerState<AlbumsScreen>
     if (!mounted) return;
     try {
       await PhotoManager.releaseCache();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[refreshFromExternal] releaseCache error: $e');
+    }
     if (!mounted) return;
     await ref.read(albumsCatalogProvider.notifier).refresh();
     if (!mounted) return;

@@ -493,7 +493,6 @@ class MainActivity : FlutterActivity() {
         scannedUris: List<Uri>,
         result: MethodChannel.Result,
     ) {
-        if (pendingDeleteResult === result) return // double-dispatch 방어
         try {
             val resolver = applicationContext.contentResolver
             val uris = scannedUris.toMutableList()
@@ -582,8 +581,8 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    // 한 앨범의 image는 Pictures/<bucket>/, video는 Movies/<bucket>/ 으로 분산
-    // 저장될 수 있어 매치되는 모든 디렉토리를 반환.
+    // 새 자산은 Pictures/<bucket>/만 사용하지만, 기존 분리 저장(Movies, DCIM)
+    // 잔재 폴더가 남아 있을 수 있어 매치되는 모든 디렉토리를 반환.
     private fun findBucketDirs(bucket: String): List<File> {
         val roots = listOf(
             Environment.DIRECTORY_PICTURES,

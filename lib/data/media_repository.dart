@@ -266,9 +266,12 @@ class PhotoManagerMediaRepository implements MediaRepository {
     required String filename,
     required Album album,
   }) async {
+    // 사진/영상 같은 root(Pictures/<name>/) 통일 — 한 폴더 = 한 앨범. photo_manager
+    // 가 BUCKET_DISPLAY_NAME 같아도 root path 다르면 별개 bucket으로 보는 함정 회피.
+    // design.md Decision 5 참고.
     final relativePath = await _resolveRelativePath(
       album,
-      mediaRoot: 'Movies',
+      mediaRoot: 'Pictures',
     );
     final asset = await PhotoManager.editor.saveVideo(
       file,
@@ -328,27 +331,25 @@ class PhotoManagerMediaRepository implements MediaRepository {
 
   @override
   Future<bool> deleteAlbum(Album album) async {
-    // 방금 saveImage된 자산은 우리 프로세스 ContentResolver binder cache가 stale
-    // 이라 native query가 0건으로 떨어질 수 있다. cache를 비우고 MediaScanner를
-    // 한 번 통과시켜 fresh를 보장한 뒤 native에 위임.
-    try {
-      await PhotoManager.releaseCache();
-    } catch (_) {}
-    await scanCameraDirs();
-    // placeholder는 메모리 자리표시자라 시스템 앨범 삭제 흐름이 본질적으로 안
-    // 맞지만, 그 사이 사용자가 카메라로 사진/영상을 저장했다면 disk에 실제 폴더
-    // 와 파일이 떨어져 있을 수 있다(photo_manager가 아직 system 앨범으로 인식
-    // 못 한 상태). 그래서 메모리 entry 정리와 native 정리를 같이 시도한다.
+    // placeholder는 사용자가 그 자리에서 카메라로 자산을 저장한 직후일 수 있다.
+    // 이 짧은 window에선 우리 프로세스 ContentResolver binder cache가 stale이라
+    // native query가 0건으로 떨어져 OS 다이얼로그 없이 빈 success가 나온다. 그
+    // 케이스에만 cache를 비우고 MediaScanner를 한 번 통과시켜 fresh 보장. 오래
+    // 안정된 RealAlbum에는 prep 비용을 매번 부담하지 않는다.
     if (album.isPlaceholder) {
+      await scanCameraDirs();
+      try {
+        await PhotoManager.releaseCache();
+      } catch (e) {
+        debugPrint('[deleteAlbum] releaseCache error: $e');
+      }
       _placeholderNames.remove(album.name);
     }
     final ok = await deleteAlbumNative(album.name);
     if (ok) {
       _pathCache.remove(album.name);
     }
-    // placeholder는 메모리 정리만으로도 UX 측면에서 "삭제됨"이라 native가 빈
-    // 폴더/0건으로 success(true) 반환했든 사용자 입장에선 OK.
-    return ok || album.isPlaceholder;
+    return ok;
   }
 
   @override

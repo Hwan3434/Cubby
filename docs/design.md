@@ -83,6 +83,21 @@
 - iOS는 디스크에 단순 쓰기로는 사진 앱에 노출 안 됨 → PhotoKit 등록 필요
 - `image_picker`는 시스템 카메라 앱에 종속되어 앨범 컨텍스트 유지가 어려움
 
+### Decision 5: Android 저장 root 통일 (Pictures/&lt;name&gt;/)
+
+**결정**: 사진과 영상 모두 `Pictures/<albumName>/`로 저장. 영상을 `Movies/<albumName>/`로 분리하지 않음.
+
+**근거**:
+
+- photo_manager의 Android 구현은 BUCKET_DISPLAY_NAME이 같아도 root path가 다르면 별개 `AssetPathEntity`로 분리 인식. 사진은 `Pictures/<name>/`에, 영상은 `Movies/<name>/`에 두면 한 앨범인데 cubby UI에 카드가 두 개로 보이는 문제 발생.
+- 한 폴더 = 한 앨범이 사용자/외부 도구(파일 매니저, 다른 갤러리 앱) mental model에 일치. PC에서 USB로 봐도 한 폴더라 일관됨.
+- Samsung 갤러리 등 일부 OEM 갤러리는 BUCKET 기준이라 root가 Pictures여도 영상은 영상 카테고리로 자연스럽게 분류됨. `Environment.DIRECTORY_PICTURES`/`MOVIES` 분리는 권장 위치일 뿐 강제는 아님.
+- `MediaRepository.saveImage`/`saveVideo`가 같은 `mediaRoot: 'Pictures'`를 쓰면 `findBucketDirs`/`gridItems` 등 보조 코드의 "두 root 합치기" 분기가 단순화됨.
+
+**호환성**:
+
+- 기존 분리 저장(Decision 5 도입 이전)으로 만들어진 `Movies/<name>/` 잔재 폴더는 native `findBucketDirs`/`scanCameraDirs`가 계속 모든 root를 walk하므로 자연스럽게 정리됨. 새 자산은 Pictures에만 들어가니 시간이 지나면 Movies 잔재는 사라짐.
+
 -----
 
 ## 4. 패키지 스택
@@ -238,7 +253,7 @@ abstract class MediaRepository {
 
 ### 8.1 Android
 
-- **저장 경로**: `DCIM/[앨범명]/` 또는 `Pictures/[앨범명]/`로 저장 시 시스템 갤러리에 자동 노출
+- **저장 경로**: 사진/영상 모두 `Pictures/[앨범명]/`에 저장 (Decision 5). DCIM은 시스템 카메라 영역이라 피하고, Movies로 영상을 분리하면 photo_manager가 같은 앨범을 둘로 인식하는 함정이 있어 통일.
 - **권한 모델**: 앱이 만든 파일은 권한 없이 자유롭게 읽기/쓰기 가능. 다른 앱이 만든 파일 수정/삭제는 `MediaStore.createWriteRequest()` / `createDeleteRequest()` 다이얼로그 필요
 - **앱 재설치 시**: 이전에 만든 파일에 대한 쓰기 권한을 자동으로 잃음 → 사용자 동의 다이얼로그 필요
 - **앨범 이름 변경**: 폴더 rename으로 구현됨. 일부 갤러리 앱은 캐시 갱신까지 잠깐 빈 앨범처럼 보일 수 있음
@@ -302,6 +317,7 @@ Future<AssetEntity> capturePhoto({
 |PHAssetCollection 사용자 변경|iOS에서 앱과 이름 어긋남      |표시 전 시스템 값 재조회                 |
 |Android 빈 앨범 생성 불가       |MediaStore에 폴더만 만드는 API 없음 |메모리 전용 `PlaceholderAlbum` 도입. 사용자에겐 즉시 앨범으로 보이고, 첫 자산 저장 시 시스템 폴더가 materialise되며 자동 promote. 영속성 없음 (앱 재시작 시 자리표시자는 사라짐).|
 |Android 외부 카메라 촬영 stale | 백그라운드 동안 외부 카메라가 commit한 새 사진을 photo_manager가 같은 프로세스 lifetime 안에서 못 봄 (MediaProvider binder cache stale, `MediaScannerConnection.scanFile`도 미해소) | (1) `MainActivity.onCreate`에서 `MediaStore.{Images,Video}` URI에 ContentObserver 등록 — 외부 변화 시점에 우리 프로세스 binder cache가 자동 invalidate. (2) Native `recentByBucket`로 MediaStore 직접 쿼리해 최신 N장을 받아 `SyntheticImageAsset`(file path 포함)으로 감싼 뒤 `AlbumLive.gridItems`가 photo_manager items 위에 끼워줌. (3) Detail/share는 synthetic의 originFile/originBytes가 진짜 파일을 디코딩해 정상 동작. selection delete만은 photo_manager가 fresh를 따라잡을 때까지 대기. |
+| Android 같은 BUCKET 다른 root → 두 앨범 카드 | 한 앨범의 사진을 `Pictures/<name>/`, 영상을 `Movies/<name>/`로 분산 저장하면 photo_manager가 별개 `AssetPathEntity`로 분리 인식 → 사용자에겐 같은 이름 카드 두 개 | Decision 5: 사진/영상 모두 `Pictures/<albumName>/`로 통일 저장. 기존 분리 잔재는 native delete 흐름이 모든 root를 walk해 같이 정리. |
 
 -----
 

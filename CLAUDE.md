@@ -83,7 +83,7 @@ dart run build_runner build
   - iOS/macOS: 즉시 시스템에 실제 빈 앨범 생성 → `RealAlbum`
   - Android: 메모리 자리표시자만 생성 → `PlaceholderAlbum`. 첫 자산 저장 시 시스템 폴더가 materialise되며 자동으로 `RealAlbum`으로 promote됨.
 - **자리표시자는 메모리에만 존재** — 앱 재시작/크래시 시 사라짐. 의도된 동작 (사진 한 장도 안 들어간 앨범은 영속될 가치 없음).
-- `saveImage`/`saveVideo`는 Android에서 `Pictures/<albumName>/` 또는 `Movies/<albumName>/`에 저장. iOS는 라이브러리에 추가 후 `copyAssetToPath`로 앨범에 링크 (PhotoKit soft-link, RealAlbum에 한함).
+- `saveImage`/`saveVideo`는 Android에서 둘 다 `Pictures/<albumName>/`에 저장 (Decision 5 — 한 폴더 = 한 앨범 통일). iOS는 라이브러리에 추가 후 `copyAssetToPath`로 앨범에 링크 (PhotoKit soft-link, RealAlbum에 한함).
 - Android에서 같은 표시명 앨범을 중복 bucket으로 쪼개지 않도록 `RealAlbum`은 `album.source.relativePathAsync`를 우선 사용. 자리표시자는 그게 없으니 `<mediaRoot>/<name>` 컨벤션으로 첫 폴더 생성.
 - `getAssets(PlaceholderAlbum)`는 빈 리스트 반환 (platform-channel 호출 자체 안 함).
 - `deleteAssets`는 Android 11+ / iOS에서 **시스템 동의 다이얼로그가 자동으로 뜸**. 앱 자체 확인 다이얼로그를 추가하지 말 것 (이중 확인됨).
@@ -98,6 +98,7 @@ dart run build_runner build
 | Android 앱 재설치 후 권한 손실 | 기존 파일 삭제/수정 시 시스템 다이얼로그 (자동 처리됨) |
 | Android 빈 앨범 생성 불가 (OS 제약) | `PlaceholderAlbum`으로 UX상 해소. MediaRepository 계약 참고 |
 | Android 외부 카메라 촬영 stale | 백그라운드 동안 외부 카메라가 찍은 사진을 photo_manager가 같은 프로세스에서 못 봄. 대응: `MainActivity`가 ContentObserver 등록해 binder cache를 자동 invalidate + native `recentByBucket`이 MediaStore 직접 쿼리한 최신 자산을 `SyntheticImageAsset`(file path 포함)으로 감싸 `AlbumLive.gridItems`가 cover/그리드 첫 슬롯에 보강. detail/share는 file path로 진짜 파일 디코딩. selection delete만 photo_manager fresh 대기. design.md §10 참고. |
+| Android 같은 이름 다른 root → 카드 2개 | photo_manager가 BUCKET 같아도 root path 다르면 별개 bucket으로 인식. 사진/영상을 Pictures/Movies 분리 저장하면 한 앨범이 두 카드로 보임. 대응: 모든 자산을 `Pictures/<albumName>/`로 통일 저장 (Decision 5). saveImage/saveVideo가 같은 mediaRoot 사용. |
 | 화면에 사진 가려짐 (Android 15+ edge-to-edge) | 모든 `Scaffold` body는 `SafeArea(top: false)`로 감쌀 것. AppBar 있는 화면은 top inset이 자동 처리되니 bottom만 보호 |
 
 ### 변경 시 회귀 회피
