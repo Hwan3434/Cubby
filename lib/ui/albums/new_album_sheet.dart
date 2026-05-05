@@ -47,9 +47,14 @@ class _NewAlbumSheetState extends State<_NewAlbumSheet> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final cubby = context.cubby;
-    final inset = MediaQuery.viewInsetsOf(context).bottom;
+    final keyboard = MediaQuery.viewInsetsOf(context).bottom;
+    final homeIndicator = MediaQuery.viewPaddingOf(context).bottom;
+    // 키보드가 떠 있으면 home indicator 영역도 키보드가 가려 그 만큼만 띄우면
+    // 충분. 키보드 없을 땐 home indicator/제스처 바 위로 컨텐츠가 닿지 않게
+    // 그 영역만큼 padding.
+    final bottomSafe = keyboard > 0 ? 0.0 : homeIndicator;
     return Padding(
-      padding: EdgeInsets.only(bottom: inset),
+      padding: EdgeInsets.only(bottom: keyboard),
       child: Container(
         decoration: BoxDecoration(
           color: cubby.canvas,
@@ -58,11 +63,11 @@ class _NewAlbumSheetState extends State<_NewAlbumSheet> {
             topRight: CubbyRadius.xxl,
           ),
         ),
-        padding: const EdgeInsets.fromLTRB(
+        padding: EdgeInsets.fromLTRB(
           CubbySpacing.lg,
           12,
           CubbySpacing.lg,
-          28,
+          28 + bottomSafe,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -190,11 +195,15 @@ class _NameField extends StatelessWidget {
               fontSize: 18,
               color: scheme.onSurface,
             ),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               isDense: true,
               border: InputBorder.none,
-              contentPadding: EdgeInsets.only(top: 4),
-              hintText: '예: 베란다 식물',
+              contentPadding: const EdgeInsets.only(top: 4),
+              hintText: '앨범명을 지어주세요',
+              hintStyle: CubbyType.bodyMd.copyWith(
+                fontSize: 18,
+                color: cubby.muted,
+              ),
             ),
           ),
         ],

@@ -18,22 +18,34 @@ Future<void> scanCameraDirs() async {
   }
 }
 
-/// 모든 BUCKET_DISPLAY_NAME과 자산 수의 매핑. photo_manager가 새 bucket을
-/// stale로 누락하는 동안 cubby catalog가 그 bucket을 못 보는 문제 우회용.
-/// iOS는 빈 map.
-Future<Map<String, int>> fetchBucketSummary() async {
+/// 한 bucket의 native 집계: 자산 수 + 가장 최근 자산 ms epoch.
+class BucketAgg {
+  const BucketAgg({required this.count, required this.lastTakenMs});
+
+  /// image+video 합산 자산 수.
+  final int count;
+
+  /// 가장 최근 자산의 ms epoch (DATE_TAKEN, 폴백 DATE_ADDED*1000). 0이면 unknown.
+  final int lastTakenMs;
+}
+
+/// 모든 BUCKET_DISPLAY_NAME → [BucketAgg] 매핑. photo_manager가 새 bucket을
+/// stale로 누락하는 동안 cubby catalog가 그 bucket을 못 보는 문제 우회용 +
+/// 앨범 목록 "최근 자산 desc" 정렬에 사용. iOS는 빈 map.
+Future<Map<String, BucketAgg>> fetchBucketSummary() async {
   if (!Platform.isAndroid) return const {};
   const channel = MethodChannel('cubby/media_refresh');
   try {
     final dynamic res = await channel.invokeMethod<dynamic>('bucketSummary');
     if (res is! List) return const {};
-    final out = <String, int>{};
+    final out = <String, BucketAgg>{};
     for (final entry in res) {
       if (entry is! Map) continue;
       final name = entry['name'] as String?;
       final count = (entry['count'] as num?)?.toInt();
       if (name == null || count == null) continue;
-      out[name] = count;
+      final lastTakenMs = (entry['lastTakenMs'] as num?)?.toInt() ?? 0;
+      out[name] = BucketAgg(count: count, lastTakenMs: lastTakenMs);
     }
     return out;
   } on PlatformException catch (e) {

@@ -412,17 +412,21 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /// 모든 BUCKET_DISPLAY_NAME과 그 안의 자산 수를 image+video 통합으로 반환.
-    /// photo_manager가 외부에서 막 생긴 bucket을 stale로 누락하는 동안 cubby
-    /// catalog가 그 bucket을 못 보는 문제 우회용.
+    /// 모든 BUCKET_DISPLAY_NAME과 그 안의 자산 수 + 가장 최근 자산 ms epoch
+    /// (DATE_TAKEN, 0이면 DATE_ADDED*1000으로 폴백)을 image+video 통합으로 반환.
+    /// catalog 보강 + 앨범 정렬(최근 자산 desc)에 사용.
     private fun bucketSummary(result: MethodChannel.Result) {
         try {
             val resolver: ContentResolver = applicationContext.contentResolver
-            val counts = HashMap<String, Int>()
-            collectBucketCounts(resolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, counts)
-            collectBucketCounts(resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, counts)
-            val out = counts.entries.map { (name, count) ->
-                mapOf("name" to name, "count" to count)
+            val agg = HashMap<String, BucketAgg>()
+            collectBucketAgg(resolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, agg)
+            collectBucketAgg(resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, agg)
+            val out = agg.entries.map { (name, a) ->
+                mapOf(
+                    "name" to name,
+                    "count" to a.count,
+                    "lastTakenMs" to a.lastTakenMs,
+                )
             }
             result.success(out)
         } catch (e: Exception) {
@@ -431,23 +435,39 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun collectBucketCounts(
+    private data class BucketAgg(var count: Int, var lastTakenMs: Long)
+
+    private fun collectBucketAgg(
         resolver: ContentResolver,
         collection: Uri,
-        out: HashMap<String, Int>,
+        out: HashMap<String, BucketAgg>,
     ) {
         resolver.query(
             collection,
-            arrayOf(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME),
+            arrayOf(
+                MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+                MediaStore.MediaColumns.DATE_TAKEN,
+                MediaStore.MediaColumns.DATE_ADDED,
+            ),
             null,
             null,
             null,
         )?.use { c ->
-            val nameCol =
-                c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+            val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+            val takenCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
+            val addedCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
             while (c.moveToNext()) {
                 val name = c.getString(nameCol) ?: continue
-                out[name] = (out[name] ?: 0) + 1
+                val taken = c.getLong(takenCol)
+                val added = c.getLong(addedCol)
+                val ms = if (taken > 0) taken else added * 1000
+                val cur = out[name]
+                if (cur == null) {
+                    out[name] = BucketAgg(1, ms)
+                } else {
+                    cur.count += 1
+                    if (ms > cur.lastTakenMs) cur.lastTakenMs = ms
+                }
             }
         }
     }

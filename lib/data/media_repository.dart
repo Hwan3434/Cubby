@@ -193,9 +193,19 @@ class PhotoManagerMediaRepository implements MediaRepository {
       albums.add(Album(
         name: entry.key,
         origin: AlbumOrigin.system,
-        storedCount: entry.value,
+        storedCount: entry.value.count,
       ));
     }
+    // 정렬: 가장 최근 자산 desc. native summary가 lastTakenMs를 가져서 신뢰
+    // 가능하고, photo_manager만 보는 앨범은 nativeSummary에 없으면 0으로 폴백
+    // (그 경우 알파벳 분리). placeholder는 자산 없으니 맨 위 — 사용자가 막 만든
+    // 앨범이라 그게 직관적.
+    albums.sort((a, b) {
+      final aMs = nativeSummary[a.name]?.lastTakenMs ?? 0;
+      final bMs = nativeSummary[b.name]?.lastTakenMs ?? 0;
+      if (aMs != bMs) return bMs.compareTo(aMs);
+      return a.name.compareTo(b.name);
+    });
     _placeholderNames.removeWhere(knownNames.contains);
     final placeholderAlbums = _placeholderNames.map(
       (name) => Album(
@@ -204,7 +214,7 @@ class PhotoManagerMediaRepository implements MediaRepository {
         storedCount: 0,
       ),
     );
-    return [...albums, ...placeholderAlbums];
+    return [...placeholderAlbums, ...albums];
   }
 
   @override
