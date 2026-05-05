@@ -135,17 +135,32 @@ class AlbumLiveNotifier extends Notifier<AlbumLive> {
         return;
       }
       final repo = ref.read(mediaRepositoryProvider);
-      // 첫 페이지는 page+native 병렬로 first-paint 단축. 후속 페이지는 native
-      // 재호출 없이 append만.
+      // 첫 페이지는 page + nativeRecents + nativeIds(외부 삭제 cull용)를 병렬로
+      // 받아 first-paint 단축. 후속 페이지는 append만.
       final pageF = repo.getAssets(album, page: state.nextPage, pageSize: _pageSize);
       final nativeF = isFirstPage ? _fetchNativeRecents() : Future.value(null);
+      final nativeIdsF = isFirstPage
+          ? fetchAssetIdsByBucket(albumName)
+          : Future.value(const <NativeAssetId>{});
       final page = await pageF;
       final native = await nativeF;
+      final nativeIds = await nativeIdsF;
       if (_disposed) return;
-      // 첫 페이지는 통째 교체 — refresh()가 옛 items를 깜빡임 방지로 남겨둬도
-      // stale이 누적되지 않게.
+      // 외부 갤러리 등에서 삭제된 자산을 photo_manager가 stale로 들고 있을 때를
+      // 위해 native MediaStore ID set과 교차 검증해 cull. nativeIds가 비면
+      // (iOS — id 형식이 다르고 native 호출이 빈 set 반환, 또는 native 실패)
+      // 안전 측면에서 cull 안 함.
+      Iterable<MediaAsset> filteredPage = page;
+      if (isFirstPage && nativeIds.isNotEmpty) {
+        filteredPage = page.where((a) {
+          if (a.source != AssetSource.photoManager) return true;
+          final id = int.tryParse(a.id);
+          if (id == null) return true; // Android raw id가 정수 파싱 안 되면 보수적으로 보존
+          return nativeIds.contains(NativeAssetId(id: id, isVideo: a.isVideo));
+        });
+      }
       final base = isFirstPage ? const <MediaAsset>[] : state.items;
-      final merged = [...base, ...page]
+      final merged = [...base, ...filteredPage]
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
       state = state.copyWith(
         items: merged,

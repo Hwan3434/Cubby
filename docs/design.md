@@ -38,6 +38,7 @@
 - 사용자 정의 정렬과 시스템 갤러리 정렬의 동기화
 - 클라우드 백업/공유
 - 사진 편집 기능
+- 영상 비율 변경 (MediaCodec/ffmpeg 비용 vs 단순함 trade-off, Decision 6 참고)
 
 -----
 
@@ -98,6 +99,22 @@
 
 - 기존 분리 저장(Decision 5 도입 이전)으로 만들어진 `Movies/<name>/` 잔재 폴더는 native `findBucketDirs`/`scanCameraDirs`가 계속 모든 root를 walk하므로 자연스럽게 정리됨. 새 자산은 Pictures에만 들어가니 시간이 지나면 Movies 잔재는 사라짐.
 
+### Decision 6: 사진 비율 4종 + 영상 비율 미지원
+
+**결정**: 사진은 `Full / 3:4 / 16:9 / 1:1` 4종 비율 지원 (디폴트 `Full`). 영상은 항상 sensor full로 녹화하며 비율 변경 불가.
+
+**근거 (사진)**:
+
+- sensor full 캡처 → `image` 패키지로 후처리 center-crop. 모든 디바이스에서 결과가 균일.
+- preview는 `AspectRatio` 박스로 letterbox해 사용자가 본 영역과 저장 결과가 일치.
+- crop은 isolate에서 실행해 main thread block 방지.
+
+**근거 (영상 미지원)**:
+
+- 영상 비율 변경은 Android `MediaCodec`/`MediaMuxer` 후처리 또는 ffmpeg 의존성 도입이 필요. 전자는 native 코드 200~400줄, 후자는 앱 사이즈 50~100MB 증가.
+- cubby의 "표준 Flutter 패키지 위주, 커스텀 네이티브 회피" 정책 + 1인 앱 단순함 우선 기준에 어긋남.
+- 영상 모드 진입 시 비율 캡슐을 자동으로 숨겨 UI 일관성 유지.
+
 -----
 
 ## 4. 패키지 스택
@@ -107,6 +124,7 @@
 |시스템 미디어 추상화|`photo_manager`      |`^3.x`|
 |카메라 촬영     |`camera` (Flutter 공식)|최신    |
 |권한 처리 보조   |`permission_handler` |최신    |
+|사진 비율 crop  |`image`              |`^4.x`|
 
 **의도적으로 배제**:
 

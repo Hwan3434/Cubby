@@ -148,10 +148,13 @@ class PhotoManagerMediaRepository implements MediaRepository {
 
   @override
   Future<List<Album>> getUserAlbums() async {
-    final system = await _systemAlbums();
-    // path별로 fetchPathProperties → assetCountAsync를 한 chain으로 묶어
-    // 모든 path가 병렬로 끝까지 진행되도록. 이전엔 두 단계가 직렬이라
-    // 라운드트립이 두 번이었음.
+    // photo_manager의 system albums + native MediaStore의 bucket summary를 병렬로
+    // 받아 합친다. native summary는 photo_manager가 stale로 누락한 bucket을
+    // 보강하는 용도 — 외부 카메라가 막 만든 폴더, cubby 자체 카메라가 saveImage
+    // 직후 인식 못 한 폴더 등. iOS는 native summary가 빈 map이라 영향 없음.
+    final systemF = _systemAlbums();
+    final nativeSummaryF = fetchBucketSummary();
+    final system = await systemF;
     final realAlbums = await Future.wait(
       system.map((e) async {
         AssetPathEntity refreshed;
@@ -181,8 +184,19 @@ class PhotoManagerMediaRepository implements MediaRepository {
         realAlbums.map((entry) => MapEntry(entry.key.name, entry.key)),
       );
     final albums = realAlbums.map((entry) => entry.value).toList();
-    final realNames = albums.map((a) => a.name).toSet();
-    _placeholderNames.removeWhere(realNames.contains);
+    final knownNames = albums.map((a) => a.name).toSet();
+    final nativeSummary = await nativeSummaryF;
+    // photo_manager가 못 본 native bucket을 system으로 보강. _pathCache에는
+    // entity가 없지만 albumLive의 nativeRecents 보강이 자산 표시를 채운다.
+    for (final entry in nativeSummary.entries) {
+      if (!knownNames.add(entry.key)) continue;
+      albums.add(Album(
+        name: entry.key,
+        origin: AlbumOrigin.system,
+        storedCount: entry.value,
+      ));
+    }
+    _placeholderNames.removeWhere(knownNames.contains);
     final placeholderAlbums = _placeholderNames.map(
       (name) => Album(
         name: name,

@@ -107,6 +107,15 @@ class MainActivity : FlutterActivity() {
                             recentByBucket(bucket, limit, size, result)
                         }
                     }
+                    "assetIdsByBucket" -> {
+                        val bucket = call.argument<String>("bucket")
+                        if (bucket == null) {
+                            result.error("bad_args", "bucket required", null)
+                        } else {
+                            assetIdsByBucket(bucket, result)
+                        }
+                    }
+                    "bucketSummary" -> bucketSummary(result)
                     "deleteAlbum" -> {
                         val bucket = call.argument<String>("bucket")
                         if (bucket == null) {
@@ -399,6 +408,83 @@ class MainActivity : FlutterActivity() {
                     ),
                 )
                 taken++
+            }
+        }
+    }
+
+    /// 모든 BUCKET_DISPLAY_NAME과 그 안의 자산 수를 image+video 통합으로 반환.
+    /// photo_manager가 외부에서 막 생긴 bucket을 stale로 누락하는 동안 cubby
+    /// catalog가 그 bucket을 못 보는 문제 우회용.
+    private fun bucketSummary(result: MethodChannel.Result) {
+        try {
+            val resolver: ContentResolver = applicationContext.contentResolver
+            val counts = HashMap<String, Int>()
+            collectBucketCounts(resolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, counts)
+            collectBucketCounts(resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, counts)
+            val out = counts.entries.map { (name, count) ->
+                mapOf("name" to name, "count" to count)
+            }
+            result.success(out)
+        } catch (e: Exception) {
+            Log.e(TAG, "bucketSummary failed", e)
+            result.error("query_failed", e.message, null)
+        }
+    }
+
+    private fun collectBucketCounts(
+        resolver: ContentResolver,
+        collection: Uri,
+        out: HashMap<String, Int>,
+    ) {
+        resolver.query(
+            collection,
+            arrayOf(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { c ->
+            val nameCol =
+                c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+            while (c.moveToNext()) {
+                val name = c.getString(nameCol) ?: continue
+                out[name] = (out[name] ?: 0) + 1
+            }
+        }
+    }
+
+    /// [bucket]에 속한 모든 자산의 (id, isVideo) 쌍을 image+video 통합으로 반환.
+    /// photo_manager 자체 cache가 외부 삭제를 stale로 못 보는 동안에도 진실
+    /// source가 되도록 — Dart 측 albumLive items에서 이 set에 없는 자산을 cull.
+    private fun assetIdsByBucket(bucket: String, result: MethodChannel.Result) {
+        try {
+            val resolver: ContentResolver = applicationContext.contentResolver
+            val ids = mutableListOf<Map<String, Any>>()
+            collectIds(resolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, bucket, false, ids)
+            collectIds(resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, bucket, true, ids)
+            result.success(ids)
+        } catch (e: Exception) {
+            Log.e(TAG, "assetIdsByBucket failed", e)
+            result.error("query_failed", e.message, null)
+        }
+    }
+
+    private fun collectIds(
+        resolver: ContentResolver,
+        collection: Uri,
+        bucket: String,
+        isVideo: Boolean,
+        out: MutableList<Map<String, Any>>,
+    ) {
+        resolver.query(
+            collection,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.BUCKET_DISPLAY_NAME} = ?",
+            arrayOf(bucket),
+            null,
+        )?.use { c ->
+            val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            while (c.moveToNext()) {
+                out.add(mapOf("id" to c.getLong(idCol), "isVideo" to isVideo))
             }
         }
     }

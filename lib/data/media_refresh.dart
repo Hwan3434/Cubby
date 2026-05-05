@@ -18,6 +18,63 @@ Future<void> scanCameraDirs() async {
   }
 }
 
+/// 모든 BUCKET_DISPLAY_NAME과 자산 수의 매핑. photo_manager가 새 bucket을
+/// stale로 누락하는 동안 cubby catalog가 그 bucket을 못 보는 문제 우회용.
+/// iOS는 빈 map.
+Future<Map<String, int>> fetchBucketSummary() async {
+  if (!Platform.isAndroid) return const {};
+  const channel = MethodChannel('cubby/media_refresh');
+  try {
+    final dynamic res = await channel.invokeMethod<dynamic>('bucketSummary');
+    if (res is! List) return const {};
+    final out = <String, int>{};
+    for (final entry in res) {
+      if (entry is! Map) continue;
+      final name = entry['name'] as String?;
+      final count = (entry['count'] as num?)?.toInt();
+      if (name == null || count == null) continue;
+      out[name] = count;
+    }
+    return out;
+  } on PlatformException catch (e) {
+    debugPrint('[mediaRefresh] bucketSummary error: $e');
+    return const {};
+  } catch (e) {
+    debugPrint('[mediaRefresh] bucketSummary error: $e');
+    return const {};
+  }
+}
+
+/// [bucket]에 속한 모든 자산의 native 식별자 set. photo_manager가 외부 삭제를
+/// stale로 못 보는 동안 cubby가 들고 있는 items에서 더 이상 존재하지 않는 자산을
+/// cull하는 데 사용. iOS는 native MediaStore 개념이 없어 빈 set 반환.
+Future<Set<NativeAssetId>> fetchAssetIdsByBucket(String bucket) async {
+  if (!Platform.isAndroid) return const {};
+  const channel = MethodChannel('cubby/media_refresh');
+  try {
+    final dynamic res = await channel.invokeMethod<dynamic>(
+      'assetIdsByBucket',
+      {'bucket': bucket},
+    );
+    if (res is! List) return const {};
+    final out = <NativeAssetId>{};
+    for (final entry in res) {
+      if (entry is! Map) continue;
+      final id = (entry['id'] as num?)?.toInt();
+      final isVideo = entry['isVideo'] as bool?;
+      if (id == null || isVideo == null) continue;
+      out.add(NativeAssetId(id: id, isVideo: isVideo));
+    }
+    return out;
+  } on PlatformException catch (e) {
+    debugPrint('[mediaRefresh] assetIdsByBucket($bucket) error: $e');
+    return const {};
+  } catch (e) {
+    debugPrint('[mediaRefresh] assetIdsByBucket($bucket) error: $e');
+    return const {};
+  }
+}
+
 /// [bucket]의 최근 자산 [limit]개를 image+video 통합으로. photo_manager 누락
 /// 함정의 그리드/cover 보강용. 각 항목은 file path까지 가져 detail/share가
 /// 진짜 파일을 디코딩할 수 있다.
@@ -88,6 +145,22 @@ Future<bool> deleteAlbumNative(String bucket) async {
     debugPrint('[mediaRefresh] deleteAlbum($bucket) error: $e');
     return false;
   }
+}
+
+/// MediaStore의 (collection, _ID) pair. image와 video 컬렉션이 분리돼 있어
+/// `id`만으로는 충돌 위험. 두 쌍을 같이 키로 사용.
+class NativeAssetId {
+  const NativeAssetId({required this.id, required this.isVideo});
+
+  final int id;
+  final bool isVideo;
+
+  @override
+  bool operator ==(Object other) =>
+      other is NativeAssetId && other.id == id && other.isVideo == isVideo;
+
+  @override
+  int get hashCode => Object.hash(id, isVideo);
 }
 
 /// Native MediaStore에서 가져온 한 자산. image와 video 양쪽을 표현.

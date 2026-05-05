@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image/image.dart' as img;
 
 import '../../data/album.dart';
 import '../../data/album_live.dart';
@@ -20,6 +22,23 @@ import '../widgets/bordered_thumb.dart';
 enum _Mode { photo, video }
 
 enum _Flash { off, auto, on }
+
+/// 사진 캡처 비율. video는 sensor 그대로 (이번 작업 비요구사항).
+/// sensor full로 캡처한 뒤 후처리 crop으로 적용해 모든 디바이스에서 균일.
+///
+/// [portraitWh]는 portrait 화면 기준 width/height 값. preview letterbox 크기와
+/// crop 비율 둘 다 이 값으로 통일. [full]은 sensor 그대로(crop 없음), preview는
+/// 화면 전체 cover로 그린다.
+enum _Aspect {
+  full('Full', null),
+  ratio3x4('3:4', 3 / 4),
+  ratio9x16('16:9', 9 / 16),
+  ratio1x1('1:1', 1.0);
+
+  const _Aspect(this.label, this.portraitWh);
+  final String label;
+  final double? portraitWh;
+}
 
 extension on _Flash {
   _Flash next() => switch (this) {
@@ -75,6 +94,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   List<CameraDescription> _cameras = const [];
   int _cameraIndex = 0;
   _Flash _flash = _Flash.off;
+  _Aspect _aspect = _Aspect.full;
 
   // 좌하단 "최근 촬영" 썸네일 bytes. provider state는 자산만 제공하고
   // thumbnail은 여기서 한 번 fetch해 캐시한다 (provider 첫 자산이 바뀔 때마다
@@ -244,12 +264,22 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       await controller.dispose();
       return;
     }
+    // ultra-wide가 있는 디바이스는 zoomMin이 0.5 등으로 시작해 광각으로 떨어짐.
+    // cubby는 표준 1.0x로 시작 — clamp로 디바이스 한계도 존중.
+    final initialZoom = 1.0.clamp(zoomMin, zoomMax);
+    try {
+      await controller.setZoomLevel(initialZoom);
+    } catch (_) {}
+    if (!mounted) {
+      await controller.dispose();
+      return;
+    }
     setState(() {
       _controller = controller;
       _zoomMin = zoomMin;
       _zoomMax = zoomMax;
-      _zoomLevel = zoomMin;
-      _zoomBaseline = zoomMin;
+      _zoomLevel = initialZoom;
+      _zoomBaseline = initialZoom;
     });
   }
 
@@ -332,10 +362,15 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 
   Future<void> _flipCamera() async {
     if (_cameras.length < 2 || _switchingCamera || _recording || _busy) return;
-    setState(() => _switchingCamera = true);
-    try {
-      await _controller?.dispose();
+    final old = _controller;
+    // dispose 전에 _controller=null을 트리에 알려 build가 옛 disposed를
+    // 잡지 않게 한다. spinner로 떨어진 다음 dispose + 새 bind.
+    setState(() {
+      _switchingCamera = true;
       _controller = null;
+    });
+    try {
+      await old?.dispose();
       _cameraIndex = (_cameraIndex + 1) % _cameras.length;
       await _bindCamera(_cameras[_cameraIndex]);
     } catch (e) {
@@ -365,10 +400,14 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     if (controller == null || _busy) return;
     _shutterPulse?.forward(from: 0);
     _flashFlash?.forward(from: 0);
+    final aspect = _aspect;
     setState(() => _busy = true);
     try {
       final xfile = await controller.takePicture();
-      final bytes = await xfile.readAsBytes();
+      final raw = await xfile.readAsBytes();
+      // full은 sensor 그대로. 그 외는 portrait 기준 center crop.
+      final aspectWh = aspect.portraitWh;
+      final bytes = aspectWh == null ? raw : await _cropToAspect(raw, aspectWh);
       if (!mounted) return;
       final repo = ref.read(mediaRepositoryProvider);
       final album = await _ensureAlbum();
@@ -387,6 +426,31 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       setState(() => _busy = false);
       showError(context, '촬영 실패: $e');
     }
+  }
+
+  /// portrait 화면 기준 width:height = 1:(1/aspectValue)로 center crop.
+  /// 무거운 디코딩이라 isolate에서 실행.
+  static Future<Uint8List> _cropToAspect(Uint8List bytes, double aspectWh) {
+    return Isolate.run(() => _cropSync(bytes, aspectWh));
+  }
+
+  static Uint8List _cropSync(Uint8List bytes, double aspectWh) {
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) return bytes;
+    // 사진은 EXIF 회전을 따라 portrait/landscape 둘 다 가능. shorter edge가 width.
+    final isPortrait = decoded.height >= decoded.width;
+    final shortEdge = isPortrait ? decoded.width : decoded.height;
+    final longEdge = isPortrait ? decoded.height : decoded.width;
+    // portrait 기준 width:height = aspectWh : 1 → height = width / aspectWh.
+    // landscape이면 long/short 역할이 바뀌어 width = height * aspectWh.
+    final targetLong = (shortEdge / aspectWh).round();
+    if (targetLong >= longEdge) return bytes;
+    final cropW = isPortrait ? shortEdge : targetLong;
+    final cropH = isPortrait ? targetLong : shortEdge;
+    final x = ((decoded.width - cropW) / 2).round();
+    final y = ((decoded.height - cropH) / 2).round();
+    final cropped = img.copyCrop(decoded, x: x, y: y, width: cropW, height: cropH);
+    return Uint8List.fromList(img.encodeJpg(cropped, quality: 92));
   }
 
   Future<void> _toggleRecording() async {
@@ -552,6 +616,10 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       _recentBytes = null;
     }
     final preview = controller.value.previewSize;
+    // 사진 모드에서 비율을 선택하면 그 비율의 박스로 preview를 letterbox.
+    // video 또는 full은 화면 전체 cover. 박스 바깥은 검정으로 가시화 — 사용자가
+    // 본 영역과 저장 결과가 일치한다.
+    final aspectWh = _mode == _Mode.photo ? _aspect.portraitWh : null;
     return Stack(
       children: [
         Positioned.fill(
@@ -560,19 +628,27 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
             onScaleStart: _onScaleStart,
             onScaleUpdate: _onScaleUpdate,
             onScaleEnd: _onScaleEnd,
-            child: ClipRect(
-              child: preview == null
-                  ? CameraPreview(controller)
-                  : FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        // previewSize는 sensor 좌표계라 폰을 세로로 들면
-                        // width/height가 뒤집혀 들어옴. cover 트릭은 표준 패턴.
-                        width: preview.height,
-                        height: preview.width,
-                        child: CameraPreview(controller),
-                      ),
-                    ),
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: aspectWh ??
+                    (preview == null
+                        ? MediaQuery.sizeOf(context).aspectRatio
+                        : preview.height / preview.width),
+                child: ClipRect(
+                  child: preview == null
+                      ? CameraPreview(controller)
+                      : FittedBox(
+                          fit: BoxFit.cover,
+                          child: SizedBox(
+                            // previewSize는 sensor 좌표계라 폰을 세로로 들면
+                            // width/height가 뒤집혀 들어옴. cover 트릭 표준.
+                            width: preview.height,
+                            height: preview.width,
+                            child: CameraPreview(controller),
+                          ),
+                        ),
+                ),
+              ),
             ),
           ),
         ),
@@ -581,6 +657,19 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
             child: CustomPaint(painter: _RuleOfThirdsPainter()),
           ),
         ),
+        if (_mode == _Mode.photo)
+          Positioned(
+            right: 12,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: _AspectSwitcher(
+                current: _aspect,
+                enabled: !_busy && !_recording,
+                onChanged: (a) => setState(() => _aspect = a),
+              ),
+            ),
+          ),
         if (_zoomMax > _zoomMin)
           Positioned(
             left: 0,
@@ -1122,3 +1211,76 @@ class _RuleOfThirdsPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
+
+/// 우측 가운데 세로 정렬된 비율 버튼 3개. 각각 독립 반투명 캡슐, 선택된 것은
+/// 흰 배경.
+class _AspectSwitcher extends StatelessWidget {
+  const _AspectSwitcher({
+    required this.current,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final _Aspect current;
+  final bool enabled;
+  final ValueChanged<_Aspect> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: enabled ? 1 : 0.4,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < _Aspect.values.length; i++) ...[
+            if (i > 0) const SizedBox(height: 8),
+            _AspectChip(
+              label: _Aspect.values[i].label,
+              selected: _Aspect.values[i] == current,
+              onTap: enabled && _Aspect.values[i] != current
+                  ? () => onChanged(_Aspect.values[i])
+                  : null,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AspectChip extends StatelessWidget {
+  const _AspectChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? Colors.white : Colors.black.withValues(alpha: 0.45),
+      shape: const StadiumBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.black : Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+

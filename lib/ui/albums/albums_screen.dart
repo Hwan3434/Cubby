@@ -62,10 +62,6 @@ class _AlbumsScreenState extends ConsumerState<AlbumsScreen>
   }
 
   Future<void> _refreshFromExternal() async {
-    // ref.invalidate 대신 notifier.refresh()를 쓰는 이유: invalidate는 build
-    // phase 밖에서 호출되면 autoDispose family가 dispose만 되고 재build이
-    // 트리거되지 않는 경우가 있다. ref.exists()로 살아 있는 것만 — 안 보이는
-    // 앨범은 watch가 없어 비용 0.
     await scanCameraDirs();
     if (!mounted) return;
     try {
@@ -76,6 +72,10 @@ class _AlbumsScreenState extends ConsumerState<AlbumsScreen>
     if (!mounted) return;
     await ref.read(albumsCatalogProvider.notifier).refresh();
     if (!mounted) return;
+    // ref.invalidate가 아니라 notifier.refresh()를 직접 호출하는 이유: invalidate
+    // 는 build phase 밖에서 호출되면 autoDispose family가 dispose만 되고 다시
+    // build이 트리거되지 않아 fetch가 안 발사되는 경우가 있다. ref.exists()로
+    // 살아 있는 instance만 — 화면에 안 보이는 앨범은 watch가 없어 비용 0.
     for (final a in ref.read(albumsCatalogProvider).albums) {
       final p = albumLiveProvider(a.name);
       if (!ref.exists(p)) continue;

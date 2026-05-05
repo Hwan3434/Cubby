@@ -69,6 +69,7 @@ dart run build_runner build
 - 앨범 이름 변경 (photo_manager 미지원, native channel 도입 정당화 부족)
 - 드래그앤드롭 정렬 / 사용자 정의 정렬
 - 클라우드 백업/공유, 사진 편집
+- 영상 비율 변경 (MediaCodec/ffmpeg 비용 vs 단순함 trade-off — Decision 6)
 
 ### 패키지 정책
 

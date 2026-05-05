@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
 
 import '../../data/media_asset.dart';
 
@@ -54,7 +55,14 @@ class _AssetThumbnailState extends State<AssetThumbnail> {
 
   Future<void> _fetch() async {
     final key = widget.asset.storageKey;
-    final bytes = await widget.asset.thumbnail(size: widget.size);
+    Uint8List? bytes;
+    try {
+      bytes = await widget.asset.thumbnail(size: widget.size);
+    } on PlatformException catch (_) {
+      // 외부 갤러리에서 이 자산이 삭제된 직후라 photo_manager가 던진다.
+      // 곧 albumLive cull이 정리할 자산이라 silent로 placeholder 유지.
+      bytes = null;
+    }
     if (!mounted || bytes == null) return;
     if (widget.asset.storageKey != key) return;
     widget.onBytesLoaded?.call(key, bytes);
