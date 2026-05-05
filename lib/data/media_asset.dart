@@ -42,6 +42,13 @@ abstract class MediaAsset {
   /// 컬렉션 키. (source, id)로 직렬화해 다른 source의 동일 raw id와 분리.
   String get storageKey => '${source.name}:$id';
 
+  /// 멀티 선택/삭제/공유 대상이 될 수 있는지. photo_manager AssetEntity가
+  /// 백킹된 자산은 true, native fallback으로 끼워넣은 합성 자산은 false —
+  /// 삭제 경로가 AssetEntity를 요구하기 때문. 다음 refresh 때 photo_manager
+  /// 가 fresh를 따라잡으면 같은 파일이 photo_manager 자산으로 다시 들어와
+  /// true가 된다.
+  bool get isSelectable => true;
+
   /// 그리드/스트립용 썸네일 bytes (JPEG). 실패 시 null.
   Future<Uint8List?> thumbnail({int size = 240});
 

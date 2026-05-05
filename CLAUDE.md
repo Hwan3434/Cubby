@@ -97,6 +97,7 @@ dart run build_runner build
 | iCloud 미다운로드 자산 | 원본 접근 시 시간 소요 가능. progressHandler 미구현 상태 — 대용량 자산 첫 접근 시 잠깐 멈출 수 있음 |
 | Android 앱 재설치 후 권한 손실 | 기존 파일 삭제/수정 시 시스템 다이얼로그 (자동 처리됨) |
 | Android 빈 앨범 생성 불가 (OS 제약) | `PlaceholderAlbum`으로 UX상 해소. MediaRepository 계약 참고 |
+| Android 외부 카메라 촬영 stale | 백그라운드 동안 외부 카메라가 찍은 사진을 photo_manager가 같은 프로세스에서 못 봄. 대응: `MainActivity`가 ContentObserver 등록해 binder cache를 자동 invalidate + native `recentByBucket`이 MediaStore 직접 쿼리한 최신 자산을 `SyntheticImageAsset`(file path 포함)으로 감싸 `AlbumLive.gridItems`가 cover/그리드 첫 슬롯에 보강. detail/share는 file path로 진짜 파일 디코딩. selection delete만 photo_manager fresh 대기. design.md §10 참고. |
 | 화면에 사진 가려짐 (Android 15+ edge-to-edge) | 모든 `Scaffold` body는 `SafeArea(top: false)`로 감쌀 것. AppBar 있는 화면은 top inset이 자동 처리되니 bottom만 보호 |
 
 ### 변경 시 회귀 회피

@@ -301,6 +301,7 @@ Future<AssetEntity> capturePhoto({
 |앱 재설치 후 권한 손실           |Android에서 기존 파일 수정 불가|createWriteRequest 다이얼로그       |
 |PHAssetCollection 사용자 변경|iOS에서 앱과 이름 어긋남      |표시 전 시스템 값 재조회                 |
 |Android 빈 앨범 생성 불가       |MediaStore에 폴더만 만드는 API 없음 |메모리 전용 `PlaceholderAlbum` 도입. 사용자에겐 즉시 앨범으로 보이고, 첫 자산 저장 시 시스템 폴더가 materialise되며 자동 promote. 영속성 없음 (앱 재시작 시 자리표시자는 사라짐).|
+|Android 외부 카메라 촬영 stale | 백그라운드 동안 외부 카메라가 commit한 새 사진을 photo_manager가 같은 프로세스 lifetime 안에서 못 봄 (MediaProvider binder cache stale, `MediaScannerConnection.scanFile`도 미해소) | (1) `MainActivity.onCreate`에서 `MediaStore.{Images,Video}` URI에 ContentObserver 등록 — 외부 변화 시점에 우리 프로세스 binder cache가 자동 invalidate. (2) Native `recentByBucket`로 MediaStore 직접 쿼리해 최신 N장을 받아 `SyntheticImageAsset`(file path 포함)으로 감싼 뒤 `AlbumLive.gridItems`가 photo_manager items 위에 끼워줌. (3) Detail/share는 synthetic의 originFile/originBytes가 진짜 파일을 디코딩해 정상 동작. selection delete만은 photo_manager가 fresh를 따라잡을 때까지 대기. |
 
 -----
 

@@ -3,15 +3,9 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// Native MediaScannerConnection.scanFile 호출.
-///
-/// Android에서 외부 카메라가 cubby 백그라운드 동안 사진을 추가했는데
-/// photo_manager가 같은 프로세스 안에서 새 자산을 못 보는 문제 (Android
-/// MediaProvider의 binder cache가 우리 프로세스에 stale로 잡혀 있음)를
-/// 우회하기 위함. scanFile이 MediaProvider에 pending inserts를 commit
-/// 시키면 다음 ContentResolver.query가 fresh 결과를 받는다.
-///
-/// iOS는 이 문제 자체가 없어 no-op.
+/// 외부 카메라가 raw file로만 떨궈둔 자산을 MediaProvider에 commit. 같은
+/// 프로세스 binder cache invalidation은 [MainActivity]의 ContentObserver가
+/// 처리. iOS는 no-op.
 Future<void> scanCameraDirs() async {
   if (!Platform.isAndroid) return;
   const channel = MethodChannel('cubby/media_refresh');
@@ -24,42 +18,50 @@ Future<void> scanCameraDirs() async {
   }
 }
 
-/// Native MediaStore에서 [bucket] (앨범 이름)에 속한 가장 최근 image의
-/// cover 정보를 직접 가져온다. photo_manager가 같은 프로세스 lifetime
-/// 안에서 가장 최근 1장을 누락하는 한계를 우회하기 위함.
-///
-/// iOS는 MediaStore이 없어 항상 null. Android에서만 의미.
-Future<NativeCover?> fetchLatestCoverNative(
+/// [bucket]의 최근 자산 [limit]개를 image+video 통합으로. photo_manager 누락
+/// 함정의 그리드/cover 보강용. 각 항목은 file path까지 가져 detail/share가
+/// 진짜 파일을 디코딩할 수 있다.
+Future<List<NativeRecent>> fetchRecentByBucket(
   String bucket, {
+  int limit = 8,
   int size = 200,
 }) async {
-  if (!Platform.isAndroid) return null;
+  if (!Platform.isAndroid) return const [];
   const channel = MethodChannel('cubby/media_refresh');
   try {
     final dynamic res = await channel.invokeMethod<dynamic>(
-      'latestCoverByBucket',
-      {'bucket': bucket, 'size': size},
+      'recentByBucket',
+      {'bucket': bucket, 'limit': limit, 'size': size},
     );
-    if (res is! Map) return null;
-    final bytes = res['bytes'];
-    if (bytes is! Uint8List) return null;
-    final id = (res['id'] as num?)?.toInt() ?? 0;
-    final dateTaken = (res['dateTaken'] as num?)?.toInt() ?? 0;
-    final dateAdded = (res['dateAdded'] as num?)?.toInt() ?? 0;
-    final data = res['data'] as String?;
-    return NativeCover(
-      id: id,
-      bytes: bytes,
-      dateTaken: dateTaken,
-      dateAdded: dateAdded,
-      data: data,
-    );
+    if (res is! List) return const [];
+    final out = <NativeRecent>[];
+    for (final entry in res) {
+      if (entry is! Map) continue;
+      final bytes = entry['bytes'];
+      if (bytes is! Uint8List) continue;
+      final id = (entry['id'] as num?)?.toInt() ?? 0;
+      final isVideo = (entry['isVideo'] as bool?) ?? false;
+      final dateTaken = (entry['dateTaken'] as num?)?.toInt() ?? 0;
+      final dateAdded = (entry['dateAdded'] as num?)?.toInt() ?? 0;
+      final data = entry['data'] as String?;
+      out.add(
+        NativeRecent(
+          id: id,
+          isVideo: isVideo,
+          bytes: bytes,
+          dateTaken: dateTaken,
+          dateAdded: dateAdded,
+          data: data,
+        ),
+      );
+    }
+    return out;
   } on PlatformException catch (e) {
-    debugPrint('[mediaRefresh] latestCoverByBucket($bucket) error: $e');
-    return null;
+    debugPrint('[mediaRefresh] recentByBucket($bucket) error: $e');
+    return const [];
   } catch (e) {
-    debugPrint('[mediaRefresh] latestCoverByBucket($bucket) error: $e');
-    return null;
+    debugPrint('[mediaRefresh] recentByBucket($bucket) error: $e');
+    return const [];
   }
 }
 
@@ -86,28 +88,31 @@ Future<bool> deleteAlbumNative(String bucket) async {
   }
 }
 
-class NativeCover {
-  NativeCover({
+/// Native MediaStore에서 가져온 한 자산. image와 video 양쪽을 표현.
+class NativeRecent {
+  NativeRecent({
     required this.id,
+    required this.isVideo,
     required this.bytes,
     required this.dateTaken,
     required this.dateAdded,
     required this.data,
   });
 
-  /// MediaStore _ID
+  /// MediaStore _ID. image/video 컬렉션이 분리돼 있어 [isVideo]와 함께 키.
   final int id;
+  final bool isVideo;
 
   /// JPEG-encoded thumbnail bytes (already sized).
   final Uint8List bytes;
 
-  /// MediaStore.Images.Media.DATE_TAKEN (ms epoch). 0이면 unknown.
+  /// MediaStore.*.DATE_TAKEN (ms epoch). 0이면 unknown.
   final int dateTaken;
 
-  /// MediaStore.Images.Media.DATE_ADDED (sec epoch).
+  /// MediaStore.*.DATE_ADDED (sec epoch).
   final int dateAdded;
 
-  /// 절대 파일 경로. 디버깅용.
+  /// 절대 파일 경로. detail/share에서 원본 파일 직접 접근에 사용.
   final String? data;
 
   /// photo_manager의 createDateTime과 비교 가능한 ms epoch.

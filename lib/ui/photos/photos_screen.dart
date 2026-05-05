@@ -266,6 +266,7 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
   }
 
   void _toggleSelect(MediaAsset a) {
+    if (!a.isSelectable) return;
     if (_selected.contains(a.storageKey)) {
       setState(() => _selected.remove(a.storageKey));
       return;
@@ -327,7 +328,7 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final assetsState = ref.watch(albumLiveProvider(_albumName));
-    final items = assetsState.items;
+    final items = assetsState.gridItems;
     final loading = assetsState.loading;
     final isPlaceholder =
         (widget.album?.isPlaceholder ?? false) && items.isEmpty;

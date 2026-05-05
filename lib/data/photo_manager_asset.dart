@@ -22,6 +22,9 @@ class PhotoManagerAsset implements MediaAsset {
   String get storageKey => '${source.name}:$id';
 
   @override
+  bool get isSelectable => true;
+
+  @override
   bool get isVideo => entity.type == AssetType.video;
 
   @override

@@ -5,12 +5,16 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Intent
 import android.content.IntentSender
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
@@ -33,19 +37,67 @@ class MainActivity : FlutterActivity() {
     /** 다이얼로그 동의 후 빈 폴더까지 정리하기 위해 보관. */
     private var pendingDeleteDir: File? = null
 
+    // 외부 카메라가 백그라운드 동안 commit한 사진을 photo_manager가 못 보는
+    // 함정 우회용. observer 등록만으로 MediaProvider가 우리 프로세스 binder
+    // cache를 invalidate해 다음 쿼리가 fresh를 본다 — onChange 본문은 의미 없음.
+    private var mediaObserverImage: ContentObserver? = null
+    private var mediaObserverVideo: ContentObserver? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        registerMediaObservers()
+    }
+
+    override fun onDestroy() {
+        unregisterMediaObservers()
+        super.onDestroy()
+    }
+
+    private fun registerMediaObservers() {
+        val resolver = applicationContext.contentResolver
+        val handler = Handler(Looper.getMainLooper())
+        val imageObs = object : ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean, uri: Uri?) {}
+        }
+        val videoObs = object : ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean, uri: Uri?) {}
+        }
+        try {
+            resolver.registerContentObserver(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, imageObs,
+            )
+            resolver.registerContentObserver(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, videoObs,
+            )
+            mediaObserverImage = imageObs
+            mediaObserverVideo = videoObs
+        } catch (e: Exception) {
+            Log.e(TAG, "registerMediaObservers failed", e)
+        }
+    }
+
+    private fun unregisterMediaObservers() {
+        val resolver = applicationContext.contentResolver
+        try { mediaObserverImage?.let { resolver.unregisterContentObserver(it) } } catch (_: Exception) {}
+        try { mediaObserverVideo?.let { resolver.unregisterContentObserver(it) } } catch (_: Exception) {}
+        mediaObserverImage = null
+        mediaObserverVideo = null
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "scanCamera" -> scanCamera(result)
-                    "latestCoverByBucket" -> {
+                    "recentByBucket" -> {
                         val bucket = call.argument<String>("bucket")
-                        val size = call.argument<Int>("size") ?: 160
+                        val limit = call.argument<Int>("limit") ?: 8
+                        val size = call.argument<Int>("size") ?: 200
                         if (bucket == null) {
                             result.error("bad_args", "bucket required", null)
                         } else {
-                            latestCoverByBucket(bucket, size, result)
+                            recentByBucket(bucket, limit, size, result)
                         }
                     }
                     "deleteAlbum" -> {
@@ -90,6 +142,9 @@ class MainActivity : FlutterActivity() {
      *    MediaStore.Images.Media.EXTERNAL_CONTENT_URI to drain the binder
      *    cache before we hand control back to Dart.
      */
+    // 외부 카메라가 raw file로만 저장한 자산을 MediaProvider에 commit시키기 위해
+    // MediaScanner를 한 번 발동. cache invalidation은 [registerMediaObservers]가
+    // 처리하므로 별도 wait 불필요.
     private fun scanCamera(result: MethodChannel.Result) {
         try {
             val roots = listOf(
@@ -210,71 +265,111 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * 주어진 bucket(앨범 이름)에서 가장 최근 image의 cover 썸네일을 직접
-     * MediaStore에서 가져와 JPEG bytes로 반환한다. photo_manager가 같은
-     * 프로세스 lifetime 안에서 가장 최근 1장을 빠뜨리는 한계를 우회.
-     *
-     * 반환: { id: Long, dateTaken: Long, bytes: ByteArray, data: String } 또는 null.
-     */
-    private fun latestCoverByBucket(
+    /// [bucket]에 속한 최근 자산 [limit]개를 image+video 통합으로. dateTaken이
+    /// 0이면 dateAdded로 폴백.
+    private fun recentByBucket(
         bucket: String,
+        limit: Int,
         size: Int,
         result: MethodChannel.Result,
     ) {
         try {
             val resolver: ContentResolver = applicationContext.contentResolver
-            val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            val projection = arrayOf(
-                MediaStore.Images.Media._ID,
-                MediaStore.Images.Media.DATE_TAKEN,
-                MediaStore.Images.Media.DATE_ADDED,
-                MediaStore.Images.Media.DATA,
-                MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
-            )
-            val selection = "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} = ?"
-            val selectionArgs = arrayOf(bucket)
-            val sortOrder = "${MediaStore.Images.Media.DATE_TAKEN} DESC, " +
-                "${MediaStore.Images.Media.DATE_ADDED} DESC"
-            val cursor = resolver.query(
-                uri, projection, selection, selectionArgs, sortOrder,
-            )
-            cursor?.use { c ->
-                if (!c.moveToFirst()) {
-                    result.success(null)
-                    return
-                }
-                val id = c.getLong(c.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
-                val dateTakenMs = c.getLong(
-                    c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN),
-                )
-                val dateAddedSec = c.getLong(
-                    c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED),
-                )
-                val data = c.getString(
-                    c.getColumnIndexOrThrow(MediaStore.Images.Media.DATA),
-                )
-                val itemUri = ContentUris.withAppendedId(uri, id)
-                val bytes = loadThumbnailBytes(itemUri, size)
-                if (bytes == null) {
-                    result.success(null)
-                    return
-                }
-                result.success(
+            val rows = mutableListOf<RecentRow>()
+            queryRecent(resolver, bucket, limit, isVideo = false, out = rows)
+            queryRecent(resolver, bucket, limit, isVideo = true, out = rows)
+            rows.sortByDescending { it.effectiveTakenMs }
+            val out = ArrayList<Map<String, Any?>>(limit)
+            for (row in rows.take(limit)) {
+                val uri = ContentUris.withAppendedId(row.collection, row.id)
+                val bytes = loadThumbnailBytes(uri, size) ?: continue
+                out.add(
                     mapOf(
-                        "id" to id,
-                        "dateTaken" to dateTakenMs,
-                        "dateAdded" to dateAddedSec,
-                        "data" to data,
+                        "id" to row.id,
+                        "isVideo" to row.isVideo,
+                        "dateTaken" to row.dateTakenMs,
+                        "dateAdded" to row.dateAddedSec,
+                        "data" to row.data,
                         "bytes" to bytes,
                     ),
                 )
-            } ?: run {
-                result.success(null)
             }
+            result.success(out)
         } catch (e: Exception) {
-            Log.e(TAG, "latestCoverByBucket failed", e)
+            Log.e(TAG, "recentByBucket failed", e)
             result.error("query_failed", e.message, null)
+        }
+    }
+
+    private data class RecentRow(
+        val id: Long,
+        val isVideo: Boolean,
+        val dateTakenMs: Long,
+        val dateAddedSec: Long,
+        val data: String?,
+    ) {
+        val collection: Uri
+            get() = if (isVideo) {
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+        val effectiveTakenMs: Long
+            get() = if (dateTakenMs > 0) dateTakenMs else dateAddedSec * 1000
+    }
+
+    // pre-O는 Bundle의 QUERY_ARG_LIMIT 미지원이라 cursor 전체를 받고 take.
+    private fun queryRecent(
+        resolver: ContentResolver,
+        bucket: String,
+        limit: Int,
+        isVideo: Boolean,
+        out: MutableList<RecentRow>,
+    ) {
+        val uri = if (isVideo) {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DATE_TAKEN,
+            MediaStore.MediaColumns.DATE_ADDED,
+            MediaStore.MediaColumns.DATA,
+        )
+        val selection = "${MediaStore.MediaColumns.BUCKET_DISPLAY_NAME} = ?"
+        val args = arrayOf(bucket)
+        val sortOrder =
+            "${MediaStore.MediaColumns.DATE_TAKEN} DESC, ${MediaStore.MediaColumns.DATE_ADDED} DESC"
+        val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val bundle = Bundle().apply {
+                putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+                putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, sortOrder)
+                putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
+            }
+            resolver.query(uri, projection, bundle, null)
+        } else {
+            resolver.query(uri, projection, selection, args, sortOrder)
+        }
+        cursor?.use { c ->
+            val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            val takenCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
+            val addedCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
+            val dataCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
+            var taken = 0
+            while (c.moveToNext() && taken < limit) {
+                out.add(
+                    RecentRow(
+                        id = c.getLong(idCol),
+                        isVideo = isVideo,
+                        dateTakenMs = c.getLong(takenCol),
+                        dateAddedSec = c.getLong(addedCol),
+                        data = c.getString(dataCol),
+                    ),
+                )
+                taken++
+            }
         }
     }
 

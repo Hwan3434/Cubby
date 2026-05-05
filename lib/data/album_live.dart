@@ -8,32 +8,35 @@ import 'media_refresh.dart';
 import 'media_repository.dart';
 import 'synthetic_asset.dart';
 
-/// per-album live state. items + native cover + 페이지네이션을 한 객체에서
-/// 관리하고, 화면이 필요한 derived값(effectiveCount, cover)을 그 위에서
-/// 노출. catalog의 [Album]은 정적 메타(이름/origin/시스템 카운트)만 책임.
+/// per-album live state. [gridItems]는 생성 시 한 번 계산되어 매 build마다
+/// 재계산되지 않는다.
 class AlbumLive {
-  const AlbumLive({
+  AlbumLive({
     required this.items,
-    required this.nativeCover,
+    required this.nativeRecents,
     required this.hasMore,
     required this.nextPage,
     required this.loading,
-  });
+  }) : gridItems = _mergeForGrid(items, nativeRecents);
 
-  const AlbumLive.initial()
+  AlbumLive.initial()
       : items = const [],
-        nativeCover = null,
+        nativeRecents = const [],
+        gridItems = const [],
         hasMore = true,
         nextPage = 0,
         loading = false;
 
-  /// 페이지네이션된 자산 리스트. createdAt desc.
+  /// photo_manager에서 받은 자산. createdAt desc.
   final List<MediaAsset> items;
 
-  /// photo_manager가 같은 프로세스에서 가장 최신 자산을 빠뜨릴 때 native
-  /// MediaStore에서 가져온 cover를 합성 자산으로 감싼 것. 더 최신이면
-  /// [cover]에서 우선 노출.
-  final SyntheticImageAsset? nativeCover;
+  /// native MediaStore에서 직접 받은 보강용. createdAt desc.
+  final List<SyntheticImageAsset> nativeRecents;
+
+  /// [items] 위에 [nativeRecents] 중 더 최신인 것을 끼워넣은 결과. dedup 비교가
+  /// 초 단위인 이유는 native는 ms까지, photo_manager는 초까지만 들고 있어 같은
+  /// 파일이라도 ms 부분이 달라 보이기 때문.
+  final List<MediaAsset> gridItems;
 
   final bool hasMore;
   final int nextPage;
@@ -41,39 +44,38 @@ class AlbumLive {
 
   AlbumLive copyWith({
     List<MediaAsset>? items,
-    SyntheticImageAsset? nativeCover,
-    bool resetNativeCover = false,
+    List<SyntheticImageAsset>? nativeRecents,
     bool? hasMore,
     int? nextPage,
     bool? loading,
   }) {
     return AlbumLive(
       items: items ?? this.items,
-      nativeCover:
-          resetNativeCover ? null : (nativeCover ?? this.nativeCover),
+      nativeRecents: nativeRecents ?? this.nativeRecents,
       hasMore: hasMore ?? this.hasMore,
       nextPage: nextPage ?? this.nextPage,
       loading: loading ?? this.loading,
     );
   }
+
+  static List<MediaAsset> _mergeForGrid(
+    List<MediaAsset> items,
+    List<SyntheticImageAsset> recents,
+  ) {
+    if (recents.isEmpty) return items;
+    if (items.isEmpty) return List<MediaAsset>.from(recents);
+    final maxItemSec = items.first.createdAt.millisecondsSinceEpoch ~/ 1000;
+    final extras = recents
+        .where((n) => n.createdAt.millisecondsSinceEpoch ~/ 1000 > maxItemSec)
+        .toList();
+    if (extras.isEmpty) return items;
+    return [...extras, ...items];
+  }
 }
 
-/// Live 상태 위에서 derive되는 값들. UI는 이걸 통해 cover/카운트를 본다.
 extension AlbumLiveDerived on AlbumLive {
-  /// items 중 가장 최신, 없으면 null. items는 createdAt desc 정렬을 가정.
-  MediaAsset? get latestItem => items.isEmpty ? null : items.first;
-
-  /// cover로 표시할 자산. native가 더 최신이면 native를 우선.
-  MediaAsset? coverFor(Album album) {
-    final pm = latestItem;
-    final native = nativeCover;
-    if (native == null) return pm;
-    if (pm == null) return native;
-    return native.createdAt.isAfter(pm.createdAt) ? native : pm;
-  }
-
-  /// 화면에 표시할 카운트. catalog의 storedCount가 photo_manager stale 때문에
-  /// 뒤처질 때 items.length가 더 정확해 그쪽을 우선.
+  /// catalog의 storedCount가 photo_manager stale 때문에 뒤처질 때 items.length가
+  /// 더 정확해 그쪽을 우선.
   int effectiveCountWith(Album album) {
     return items.length > album.storedCount
         ? items.length
@@ -93,22 +95,17 @@ class AlbumLiveNotifier extends Notifier<AlbumLive> {
   @override
   AlbumLive build() {
     ref.onDispose(() => _disposed = true);
-    // watch만 해도 첫 페이지가 자동 로드되도록 lazy fetch 발사. provider는
-    // autoDispose라 화면이 더 이상 보지 않으면 정리되고, 다음 watch 때 다시
-    // build → fetch가 일어난다. cover 표시용으로 albums 목록이 N개 앨범을
-    // 동시에 watch하는 케이스도 자연스럽게 cover를 채워준다.
+    // 첫 watch 때 자동으로 첫 페이지 로드. autoDispose라 화면이 떠나면 정리되고
+    // 다음 watch 때 다시 build→fetch.
     Future.microtask(() {
       if (_disposed) return;
       loadMore();
     });
-    return const AlbumLive.initial();
+    return AlbumLive.initial();
   }
 
-  /// 자산을 fetch할 때 쓸 album 인스턴스를 찾는다. catalog에 이미 있으면
-  /// 그쪽을 사용 — N개 앨범이 동시에 watch되면 N번 photo_manager round-trip이
-  /// 일어나는 N+1 비용을 막는다. catalog가 비어있는 cold start에서만
-  /// repository에 직접 묻고, 그 결과는 본 화면이 별도로 catalog에 캐시하지
-  /// 않는다(catalog 자체가 갱신될 때 다음 호출은 hot path).
+  /// catalog hit이면 photo_manager round-trip 회피 (N개 앨범 동시 watch 시 N+1
+  /// 비용 방지). cold start에서만 repository에 묻는다.
   Future<Album?> _resolveAlbum() async {
     for (final a in ref.read(albumsCatalogProvider).albums) {
       if (a.name == albumName) return a;
@@ -129,36 +126,50 @@ class AlbumLiveNotifier extends Notifier<AlbumLive> {
       final album = await _resolveAlbum();
       if (_disposed) return;
       if (album == null || album.isPlaceholder) {
-        state = state.copyWith(loading: false, hasMore: false);
-        if (isFirstPage) await _refreshNativeCover();
+        final native = isFirstPage ? await _fetchNativeRecents() : null;
+        if (_disposed) return;
+        state = state.copyWith(
+          loading: false,
+          hasMore: false,
+          nativeRecents: native ?? state.nativeRecents,
+        );
         return;
       }
       final repo = ref.read(mediaRepositoryProvider);
-      final page = await repo.getAssets(
-        album,
-        page: state.nextPage,
-        pageSize: _pageSize,
-      );
+      // 첫 페이지는 page+native 병렬로 first-paint 단축. 후속 페이지는 native
+      // 재호출 없이 append만.
+      final pageF = repo.getAssets(album, page: state.nextPage, pageSize: _pageSize);
+      final nativeF = isFirstPage ? _fetchNativeRecents() : Future.value(null);
+      final page = await pageF;
+      final native = await nativeF;
       if (_disposed) return;
-      final merged = [...state.items, ...page]
+      // 첫 페이지는 통째 교체 — refresh()가 옛 items를 깜빡임 방지로 남겨둬도
+      // stale이 누적되지 않게.
+      final base = isFirstPage ? const <MediaAsset>[] : state.items;
+      final merged = [...base, ...page]
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
       state = state.copyWith(
         items: merged,
         hasMore: page.length == _pageSize,
         nextPage: state.nextPage + 1,
         loading: false,
+        nativeRecents: native ?? state.nativeRecents,
       );
-      // native cover는 cover 표시용 우회. 첫 페이지에서만 받으면 충분.
-      if (isFirstPage) await _refreshNativeCover();
     } catch (e) {
       debugPrint('[live $albumName] loadMore error: $e');
       if (!_disposed) state = state.copyWith(loading: false);
     }
   }
 
+  /// 옛 items/nativeRecents를 유지한 채 다시 첫 페이지부터 받는다 — [loadMore]가
+  /// 새 페이지를 받는 순간 통째 swap되어 깜빡임 없음.
   Future<void> refresh() async {
     if (_disposed) return;
-    state = const AlbumLive.initial();
+    state = state.copyWith(
+      hasMore: true,
+      nextPage: 0,
+      loading: false,
+    );
     await loadMore();
   }
 
@@ -186,23 +197,44 @@ class AlbumLiveNotifier extends Notifier<AlbumLive> {
     ref.read(albumsCatalogProvider.notifier).invalidateAlbum(albumName);
   }
 
-  /// photo_manager 우회용 native cover를 갱신. 같은 프로세스 binder cache가
-  /// 새 자산을 못 보는 동안에도 cover가 최신을 따라가게 한다.
-  Future<void> _refreshNativeCover() async {
-    final native = await fetchLatestCoverNative(albumName);
-    if (_disposed) return;
-    if (native == null) {
-      state = state.copyWith(resetNativeCover: true);
-      return;
+  /// 옛 [AlbumLive.nativeRecents]와 내용이 같으면 같은 reference를 반환해
+  /// reference-equality 기반 알림이 무의미한 rebuild를 일으키지 않게 한다.
+  /// fetch 실패/미지원이면 null — 호출자는 옛 값 유지.
+  Future<List<SyntheticImageAsset>?> _fetchNativeRecents() async {
+    final recents = await fetchRecentByBucket(albumName);
+    if (_disposed || recents.isEmpty) return null;
+    final next = recents
+        .map(
+          (r) => SyntheticImageAsset(
+            id: r.id.toString(),
+            bytes: r.bytes,
+            createdAt: DateTime.fromMillisecondsSinceEpoch(r.effectiveTakenMs),
+            filePath: r.data,
+            isVideo: r.isVideo,
+          ),
+        )
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final old = state.nativeRecents;
+    if (_recentsEqual(old, next)) return old;
+    return next;
+  }
+
+  static bool _recentsEqual(
+    List<SyntheticImageAsset> a,
+    List<SyntheticImageAsset> b,
+  ) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      final x = a[i];
+      final y = b[i];
+      if (x.id != y.id ||
+          x.isVideo != y.isVideo ||
+          x.createdAt != y.createdAt) {
+        return false;
+      }
     }
-    state = state.copyWith(
-      nativeCover: SyntheticImageAsset(
-        id: native.id.toString(),
-        bytes: native.bytes,
-        createdAt:
-            DateTime.fromMillisecondsSinceEpoch(native.effectiveTakenMs),
-      ),
-    );
+    return true;
   }
 }
 

@@ -62,8 +62,10 @@ class _AlbumsScreenState extends ConsumerState<AlbumsScreen>
   }
 
   Future<void> _refreshFromExternal() async {
-    // Native MediaScanner로 MediaProvider에 commit 강제. photo_manager가
-    // 같은 프로세스에서 외부 변경을 못 보는 문제 우회. 이후 catalog refresh.
+    // ref.invalidate 대신 notifier.refresh()를 쓰는 이유: invalidate는 build
+    // phase 밖에서 호출되면 autoDispose family가 dispose만 되고 재build이
+    // 트리거되지 않는 경우가 있다. ref.exists()로 살아 있는 것만 — 안 보이는
+    // 앨범은 watch가 없어 비용 0.
     await scanCameraDirs();
     if (!mounted) return;
     try {
@@ -71,6 +73,13 @@ class _AlbumsScreenState extends ConsumerState<AlbumsScreen>
     } catch (_) {}
     if (!mounted) return;
     await ref.read(albumsCatalogProvider.notifier).refresh();
+    if (!mounted) return;
+    for (final a in ref.read(albumsCatalogProvider).albums) {
+      final p = albumLiveProvider(a.name);
+      if (!ref.exists(p)) continue;
+      // ignore: unused_result — fire-and-forget; UI는 새 state를 watch함
+      ref.read(p.notifier).refresh();
+    }
   }
 
   Future<void> _showCreateSheet() async {
@@ -416,15 +425,7 @@ class _AlbumCard extends ConsumerWidget {
     final effectiveCount = live.effectiveCountWith(album);
     final isEmpty = effectiveCount == 0;
 
-    // cover 미리보기에 사용할 자산. items가 있으면 거기서, 없을 땐 native
-    // cover를 단일 fallback으로 끼워 넣어 placeholder 상황에서도 cover가
-    // 비지 않게 한다.
-    final assets = <MediaAsset>[];
-    if (live.items.isNotEmpty) {
-      assets.addAll(live.items.take(_previewLimit));
-    } else if (live.nativeCover != null) {
-      assets.add(live.nativeCover!);
-    }
+    final assets = live.gridItems.take(_previewLimit).toList();
 
     return Material(
       color: cubby.surfaceCard,
